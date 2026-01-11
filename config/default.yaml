@@ -1,0 +1,42 @@
+# GSD-COMMS Default Configuration
+# Copy to config/local.yaml and customize for your environment
+
+valkey:
+  host: 127.0.0.1
+  port: 47445
+  user: gsd_comms
+  # password: set via VALKEY_AUTH env var or CLI flag
+
+api:
+  bind: 127.0.0.1
+  port: 8080
+  enable_dashboard: true
+
+consumer:
+  # How long to block waiting for messages (ms)
+  block_ms: 5000
+  # Maximum messages per batch
+  batch_size: 100
+  # Claim messages idle longer than this (ms)
+  idle_claim_ms: 30000
+  # How often to discover new sites (seconds)
+  discovery_interval_secs: 60
+
+retry:
+  # Maximum retry attempts before giving up
+  max_attempts: 5
+  # Base delay for exponential backoff (seconds)
+  base_delay_secs: 30
+  # Maximum delay between retries (seconds)
+  max_delay_secs: 3600
+
+spam_filter:
+  # Enable spam filtering
+  enabled: false
+  # Keywords to block (case insensitive)
+  keywords_blocklist:
+    - viagra
+    - casino
+    - crypto investment
+  # IP addresses to block
+  ip_blocklist: []

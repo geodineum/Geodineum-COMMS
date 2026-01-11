@@ -1,0 +1,2 @@
+[ALERT P{{ message.priority | default(value=3) }}] {{ site_id }}
+{{ content.subject | default(value="Alert") }}: {{ content.body | default(value="Check system") | truncate(length=80) }}

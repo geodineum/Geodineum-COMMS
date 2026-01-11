@@ -1,0 +1,3 @@
+[{{ site_id }}] Contact
+{{ content.subject | default(value="New contact") }}: {{ content.body | default(value="") | truncate(length=100) }}
+From: {{ sender.name | default(value="Unknown") }}

@@ -1,0 +1,55 @@
+<!-- subject: New contact from {{ sender.name | default(value="Someone") }} -->
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ content.subject | default(value="Contact Form Submission") }}</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: #2563eb; color: white; padding: 20px; border-radius: 8px 8px 0 0; }
+        .content { background: #f9fafb; padding: 20px; border: 1px solid #e5e7eb; }
+        .message { background: white; padding: 15px; border-radius: 4px; margin: 15px 0; }
+        .meta { font-size: 12px; color: #6b7280; border-top: 1px solid #e5e7eb; padding-top: 15px; margin-top: 20px; }
+        .label { font-weight: 600; color: #374151; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h2 style="margin: 0;">{{ content.subject | default(value="New Contact Form Submission") }}</h2>
+    </div>
+    <div class="content">
+        <div class="message">
+            <p class="label">Message:</p>
+            <p>{{ content.body | default(value="No message content") }}</p>
+        </div>
+
+        <div style="margin-top: 20px;">
+            <p class="label">From:</p>
+            <p>
+                {% if sender %}
+                {{ sender.name | default(value="Unknown") }}
+                {% if sender.email %}&lt;{{ sender.email }}&gt;{% endif %}
+                {% else %}
+                Unknown sender
+                {% endif %}
+            </p>
+        </div>
+
+        {% if sender.phone %}
+        <div style="margin-top: 10px;">
+            <p class="label">Phone:</p>
+            <p>{{ sender.phone }}</p>
+        </div>
+        {% endif %}
+
+        <div class="meta">
+            <p><strong>Site:</strong> {{ site_id }}</p>
+            <p><strong>Type:</strong> {{ message.message_type | default(value="contact") }}</p>
+            <p><strong>Time:</strong> {{ timestamp }}</p>
+            {% if sender.ip %}<p><strong>IP:</strong> {{ sender.ip }}</p>{% endif %}
+            {% if metadata.source_url %}<p><strong>Source:</strong> {{ metadata.source_url }}</p>{% endif %}
+        </div>
+    </div>
+</body>
+</html>

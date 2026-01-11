@@ -1,0 +1,45 @@
+<!-- subject: [ALERT] {{ content.subject | default(value="System Alert") }} -->
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ content.subject | default(value="System Alert") }}</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: #dc2626; color: white; padding: 20px; border-radius: 8px 8px 0 0; }
+        .header.warning { background: #f59e0b; }
+        .header.info { background: #2563eb; }
+        .content { background: #fef2f2; padding: 20px; border: 1px solid #fecaca; }
+        .content.warning { background: #fffbeb; border-color: #fde68a; }
+        .content.info { background: #eff6ff; border-color: #bfdbfe; }
+        .alert-body { background: white; padding: 15px; border-radius: 4px; margin: 15px 0; }
+        .meta { font-size: 12px; color: #6b7280; border-top: 1px solid #e5e7eb; padding-top: 15px; margin-top: 20px; }
+        .priority { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; }
+        .priority-1 { background: #dc2626; color: white; }
+        .priority-2 { background: #f59e0b; color: white; }
+        .priority-3 { background: #2563eb; color: white; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h2 style="margin: 0;">
+            <span class="priority priority-{{ message.priority | default(value=3) }}">P{{ message.priority | default(value=3) }}</span>
+            {{ content.subject | default(value="System Alert") }}
+        </h2>
+    </div>
+    <div class="content">
+        <div class="alert-body">
+            <p>{{ content.body | default(value="An alert was triggered.") }}</p>
+        </div>
+
+        <div class="meta">
+            <p><strong>Site:</strong> {{ site_id }}</p>
+            <p><strong>Alert Type:</strong> {{ message.message_type | default(value="alert") }}</p>
+            <p><strong>Priority:</strong> {{ message.priority | default(value=3) }}</p>
+            <p><strong>Time:</strong> {{ timestamp }}</p>
+            {% if metadata.environment %}<p><strong>Environment:</strong> {{ metadata.environment }}</p>{% endif %}
+        </div>
+    </div>
+</body>
+</html>
