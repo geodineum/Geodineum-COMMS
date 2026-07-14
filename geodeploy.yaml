@@ -1,0 +1,34 @@
+runtime:
+  # owner resolved from GEODEPLOY_DEPLOY_USER / DEPLOY_USER /
+  # /etc/geodineum/deploy.env.
+  # group is the dedicated COMMS runtime group — was
+  # gnode, which made every deploy chown the tree back to deploy:gnode
+  # and strip the geodineum-comms daemon's read access.
+  group: geodineum-comms
+  service: geodineum-comms
+
+triggers:
+  - match: "src/**|Cargo*"
+    actions: [build, restart]
+
+build:
+  type: cargo
+
+dirty-tree:
+  strategy: stash
+
+cli:
+  commands:
+    - name: comms contract
+      handler: scripts/cli/comms-contract.sh
+      description: Print the COMMS integration contract (stream key, message format, env gating)
+      category: COMMS
+    - name: comms status
+      handler: scripts/cli/comms-status.sh
+      description: Show COMMS daemon status and stream counts
+      category: COMMS
+    - name: comms test-send
+      handler: scripts/cli/comms-test-send.sh
+      description: Send a test notification to a site
+      requires_sudo: true
+      category: COMMS

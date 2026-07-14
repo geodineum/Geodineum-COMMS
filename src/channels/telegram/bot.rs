@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, info, instrument};
 
 use crate::channels::channel::{
     ChannelConfig, CommsMessage, NotificationChannel, RateLimit, RecipientConfig, RenderedContent,
@@ -52,7 +52,7 @@ struct TelegramMessage {
     message_id: i64,
 }
 
-/// Telegram notification channel
+/// Telegram notification channel (outbound + inbound support)
 pub struct TelegramChannel {
     client: Client,
     template_renderer: Arc<TemplateRenderer>,
@@ -64,6 +64,74 @@ impl TelegramChannel {
             client: Client::new(),
             template_renderer,
         }
+    }
+
+    /// Whether this channel supports inbound messages
+    pub fn supports_inbound(&self) -> bool {
+        true
+    }
+
+    /// Send a typing indicator to a chat
+    pub async fn send_typing_action(
+        &self,
+        bot_token: &str,
+        chat_id: &str,
+    ) -> Result<()> {
+        let url = format!("https://api.telegram.org/bot{}/sendChatAction", bot_token);
+
+        let payload = serde_json::json!({
+            "chat_id": chat_id,
+            "action": "typing",
+        });
+
+        self.client
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| CommsError::Telegram(format!("sendChatAction failed: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Edit an existing message text
+    pub async fn edit_message_text(
+        &self,
+        bot_token: &str,
+        chat_id: &str,
+        message_id: i64,
+        text: &str,
+        parse_mode: &str,
+    ) -> Result<()> {
+        let url = format!("https://api.telegram.org/bot{}/editMessageText", bot_token);
+
+        let payload = serde_json::json!({
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "parse_mode": parse_mode,
+        });
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| CommsError::Telegram(format!("editMessageText failed: {}", e)))?;
+
+        let body: TelegramResponse = response
+            .json()
+            .await
+            .map_err(|e| CommsError::Telegram(format!("Failed to parse edit response: {}", e)))?;
+
+        if !body.ok {
+            return Err(CommsError::Telegram(
+                body.description.unwrap_or_else(|| "editMessageText failed".into()),
+            ));
+        }
+
+        Ok(())
     }
 
     /// Escape special characters for MarkdownV2

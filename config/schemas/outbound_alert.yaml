@@ -1,0 +1,70 @@
+contract:
+  name: outbound_alert
+  component: geodineum_comms
+  version: "1.0.0"
+  stability: stable
+  stream: "{site_id}:gnode:comms:{env}"
+  consumer_group: geodineum_comms_dispatch
+  purpose: >
+    Send notifications/alerts via COMMS channels (email, Telegram, SMS).
+    Any component can XADD to this stream to trigger outbound delivery.
+
+  fields:
+    - name: id
+      type: string
+      required: true
+      description: "Unique message ID (idempotency key — duplicates are skipped)"
+      example: "alert-1713189600123"
+
+    - name: type
+      type: string
+      required: true
+      description: "Message type"
+      example: "alert"
+      values: "contact|alert|error|system|test"
+
+    - name: priority
+      type: integer
+      required: false
+      description: "Priority 1-5 (1=critical, 5=low, default=3)"
+      example: "2"
+
+    - name: content
+      type: json
+      required: true
+      description: "Message content: {\"subject\": \"...\", \"body\": \"...\"}"
+      example: '{"subject":"Security Alert","body":"Suspicious login attempt detected"}'
+
+    - name: sender
+      type: json
+      required: false
+      description: "Sender info: {\"name\": \"...\", \"email\": \"...\"}"
+      example: '{"name":"Alerting","email":"alerts@example.com"}'
+
+    - name: metadata
+      type: json
+      required: false
+      description: >
+        Arbitrary metadata. Include reply_options, context_id, component,
+        callback_stream, chat_id for interactive alerts.
+      example: '{"reply_options":["QUARANTINE","DISMISS"],"context_id":"ctx-123","component":"alerting","callback_stream":"alerting:gnode:comms:inbound:production","chat_id":"7135101385"}'
+
+    - name: dispatch
+      type: json
+      required: false
+      description: "Dispatch control: {\"channels\": [\"email\",\"telegram\"], \"status\": \"pending\"}"
+      example: '{"channels":["telegram"],"status":"pending"}'
+
+    - name: timestamp
+      type: iso8601
+      required: false
+      description: "ISO-8601 timestamp (auto-generated if omitted)"
+      example: "2026-04-15T15:50:46Z"
+
+  xadd_example: >
+    XADD {site_id}:gnode:comms:production *
+    id alert-001
+    type alert
+    priority 2
+    content '{"subject":"Intrusion Detected","body":"Brute force on SSH"}'
+    metadata '{"reply_options":["QUARANTINE","DISMISS"],"context_id":"ctx-001","component":"alerting","callback_stream":"alerting:gnode:comms:inbound:production","chat_id":"7135101385"}'

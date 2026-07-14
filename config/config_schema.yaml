@@ -1,0 +1,56 @@
+# Geodineum-COMMS — config_schema
+#
+# Component name matches the stream-contract publisher (`geodineum_comms`).
+# Published via geodineum_schema::publish_config_schema_sync on startup.
+
+component: geodineum_comms
+entries:
+  - key: GEODINEUM_COMMS_DATA_DIR
+    type: path
+    default: /var/lib/geodineum-comms
+    mutable: false
+    description: Persistent data root (per-site SQLite message DBs, retry queue, conversation state). Matches the binary default (src/main.rs::get_data_dir) and the unit's ReadWritePaths.
+
+  - key: COMMS_INBOUND_SITE
+    type: string
+    default: ""
+    mutable: true
+    description: Default site_id for inbound messages without explicit routing.
+
+  - key: COMMS_INBOUND_PIPELINE
+    type: string
+    default: default
+    mutable: true
+    description: Named inbound pipeline config to load at startup.
+
+  - key: COMMS_ADMIN_IDS
+    type: string
+    default: ""
+    mutable: true
+    description: >-
+      Comma-separated Telegram user IDs with admin privileges for
+      /admin commands in the Telegram bridge.
+
+  - key: COMMS_INFERENCE_CHAIN
+    type: bool
+    default: false
+    mutable: true
+    description: >-
+      Enables the staged inference chain (draft -> review -> guard
+      stages instead of single-pipeline direct inference).
+
+  - key: INFERENCE_TIMEOUT
+    type: int
+    default: 30
+    mutable: true
+    description: Inference-call wall-clock timeout (seconds).
+
+  - key: TELEGRAM_BOT_TOKEN
+    type: string
+    default: ""
+    mutable: false
+    capability: manage_options
+    description: >-
+      Telegram bot token. Typically loaded from /etc/geodineum/credentials/
+      rather than set via the wp-admin panel; present here for
+      self-documentation only. Rotation happens via credential file.

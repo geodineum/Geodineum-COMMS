@@ -1,10 +1,9 @@
 //! Message dispatcher - routes messages to appropriate channels
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::channels::{ChannelConfig, ChannelRegistry, CommsMessage, NotificationChannel, RecipientConfig};
+use crate::channels::{ChannelConfig, ChannelRegistry, CommsMessage, RecipientConfig};
 use crate::error::{CommsError, DispatchError, Result};
 use crate::settings::{SiteSettings, SettingsStore};
 
@@ -39,19 +38,47 @@ impl DispatchResult {
 pub struct MessageDispatcher {
     channel_registry: Arc<ChannelRegistry>,
     settings_store: Arc<SettingsStore>,
+    /// When false (default), messages whose resolved DTAP environment is not
+    /// "production" are dry-run instead of sent (crate::dtap). The safety gate
+    /// — non-prod sites must not emit real email/SMS/Telegram.
+    allow_nonprod_send: bool,
 }
 
 impl MessageDispatcher {
-    pub fn new(channel_registry: Arc<ChannelRegistry>, settings_store: Arc<SettingsStore>) -> Self {
+    pub fn new(
+        channel_registry: Arc<ChannelRegistry>,
+        settings_store: Arc<SettingsStore>,
+        allow_nonprod_send: bool,
+    ) -> Self {
         Self {
             channel_registry,
             settings_store,
+            allow_nonprod_send,
         }
     }
 
     /// Dispatch a message to all configured channels
     #[instrument(skip(self, message), fields(message_id = %message.id, site_id = %message.site_id))]
     pub async fn dispatch(&self, message: &CommsMessage) -> Result<DispatchResult> {
+        self.dispatch_filtered(message, None).await
+    }
+
+    /// Re-dispatch restricted to specific channels (the retry path: only the
+    /// channels that failed last time). Routing rules, per-recipient filters
+    /// and the DTAP gate all still apply — this only narrows the channel set.
+    pub async fn dispatch_channels(
+        &self,
+        message: &CommsMessage,
+        only: &[String],
+    ) -> Result<DispatchResult> {
+        self.dispatch_filtered(message, Some(only)).await
+    }
+
+    async fn dispatch_filtered(
+        &self,
+        message: &CommsMessage,
+        only: Option<&[String]>,
+    ) -> Result<DispatchResult> {
         let site_id = &message.site_id;
 
         // Load site settings
@@ -72,7 +99,12 @@ impl MessageDispatcher {
         }
 
         // Determine which channels to use based on routing rules
-        let channels = self.determine_channels(&settings, message);
+        let mut channels = self.determine_channels(&settings, message);
+        if let Some(only) = only {
+            if !only.is_empty() {
+                channels.retain(|c| only.contains(c));
+            }
+        }
 
         let mut result = DispatchResult {
             message_id: message.id.clone(),
@@ -83,13 +115,31 @@ impl MessageDispatcher {
 
         // Dispatch to each channel
         for channel_name in channels {
+            // Sentinel channels record the message — it lands on the stream and
+            // is archived as skipped — without any outbound send. This lets the
+            // single COMMS hub carry submissions (anonymous polls, signals) that
+            // must be seen by the operator but never emailed/messaged.
+            if matches!(channel_name.as_str(), "record" | "log" | "none") {
+                result.skipped_channels.push(channel_name);
+                continue;
+            }
             match self.dispatch_to_channel(&channel_name, message, &settings).await {
                 Ok(()) => {
                     result.successful_channels.push(channel_name);
                 }
                 Err(e) => {
                     if let CommsError::Channel { channel, message: err_msg } = &e {
-                        if err_msg == "disabled" {
+                        // "disabled", "no_recipients", and "nonprod_dry_run" are
+                        // all legitimate skips — record as skipped, not failed,
+                        // so they don't enter the retry queue. A silent Ok(())
+                        // here would archive the message as Sent without any
+                        // send firing. nonprod_dry_run is the non-prod gate: the
+                        // intended recipients were logged in dispatch_to_channel
+                        // but no real send fired (non-production environment).
+                        if err_msg == "disabled"
+                            || err_msg == "no_recipients"
+                            || err_msg == "nonprod_dry_run"
+                        {
                             result.skipped_channels.push(channel.clone());
                             continue;
                         }
@@ -186,13 +236,79 @@ impl MessageDispatcher {
         let recipients = self.filter_recipients(&channel_config, message);
 
         if recipients.is_empty() {
-            debug!(
+            // warn! + structured fields so journalctl makes "site has no
+            // working recipients" instantly visible. Return a distinct
+            // "no_recipients" error so the parent dispatch loop classifies
+            // this as a SKIP (not a SUCCESS — no SMTP send happened — and
+            // not a retryable FAILURE — retrying won't make recipients
+            // appear).
+            let configured = channel_config.recipients.len();
+            let priority_rejects = channel_config
+                .recipients
+                .iter()
+                .filter(|r| message.priority > r.min_priority)
+                .count();
+            let type_rejects = channel_config
+                .recipients
+                .iter()
+                .filter(|r| {
+                    !r.types.is_empty()
+                        && !r.types
+                            .iter()
+                            .any(|t| t == &message.message_type || t == "all")
+                })
+                .count();
+            warn!(
+                site_id = %message.site_id,
                 channel = %channel_name,
                 message_type = %message.message_type,
                 priority = message.priority,
-                "No recipients match message criteria"
+                configured_recipients = configured,
+                rejected_by_priority = priority_rejects,
+                rejected_by_type = type_rejects,
+                "No recipients match — message will NOT be delivered. \
+                 Inspect {{site_id}}:comms:config recipients[] and the \
+                 per-recipient types/min_priority filters."
             );
-            return Ok(());
+            return Err(CommsError::Channel {
+                channel: channel_name.to_string(),
+                message: "no_recipients".to_string(),
+            });
+        }
+
+        // Non-prod side-effect gate. Recipients are resolved, so this
+        // is the last point before a real send. When the message's resolved
+        // DTAP environment is not "production" and the daemon was not started
+        // with --allow-nonprod-send, we LOG exactly what would have gone out
+        // (so non-prod notifications are still debuggable) but fire no real
+        // email/SMS/Telegram. Returns the "nonprod_dry_run" skip so the parent
+        // loop ACKs the message (terminal — retrying won't change the
+        // environment) and records it as skipped, not sent.
+        if !crate::dtap::is_production(&message.environment) && !self.allow_nonprod_send {
+            let subject = message.content.subject.as_deref().unwrap_or("(no subject)");
+            for recipient in &recipients {
+                warn!(
+                    site_id = %message.site_id,
+                    environment = %message.environment,
+                    channel = %channel_name,
+                    message_type = %message.message_type,
+                    recipient = ?recipient.address,
+                    subject = %subject,
+                    "NON-PROD DRY-RUN — would send but did NOT (no real delivery). \
+                     Start the daemon with --allow-nonprod-send to deliver \
+                     non-production messages."
+                );
+                debug!(
+                    channel = %channel_name,
+                    recipient = ?recipient.address,
+                    body = ?message.content.body,
+                    "NON-PROD DRY-RUN — message body that would have been sent"
+                );
+            }
+            return Err(CommsError::Channel {
+                channel: channel_name.to_string(),
+                message: "nonprod_dry_run".to_string(),
+            });
         }
 
         let mut last_error = None;

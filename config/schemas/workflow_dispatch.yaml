@@ -1,0 +1,73 @@
+contract:
+  name: workflow_dispatch
+  component: geodineum_comms
+  version: "1.0.0"
+  stability: beta
+  stream: "{site_id}:gnode:comms:workflows:{env}"
+  consumer_group: null
+  purpose: >
+    Workflow dispatch from operator commands to the workflow engine.
+    COMMS recognizes workflow intents (UPDATE, BACKUP, LOCKDOWN, etc.) and
+    writes structured workflow requests for Celery pickup.
+
+  fields:
+    - name: execution_id
+      type: string
+      required: true
+      description: "Unique execution ID for tracking this workflow run"
+      example: "wf-rolling_update-1713189600123"
+
+    - name: workflow_id
+      type: string
+      required: true
+      description: "Workflow type"
+      example: "rolling_update"
+      values: "rolling_update|backup|lockdown|unlock|restart_service|deploy"
+
+    - name: description
+      type: string
+      required: true
+      description: "Human-readable description of this workflow execution"
+      example: "Rolling update (scope: your_site)"
+
+    - name: params
+      type: json
+      required: true
+      description: "Workflow parameters as JSON object"
+      example: '{"scope":"your_site"}'
+
+    - name: operator_id
+      type: string
+      required: true
+      description: "Operator who triggered the workflow"
+      example: "7135101385"
+
+    - name: operator_name
+      type: string
+      required: false
+      description: "Operator display name"
+      example: "Niels"
+
+    - name: status
+      type: string
+      required: true
+      description: "Initial status"
+      example: "pending"
+      values: "pending|running|completed|failed|cancelled"
+
+    - name: ts
+      type: iso8601
+      required: true
+      description: "ISO-8601 timestamp"
+      example: "2026-04-15T15:52:00Z"
+
+  xadd_example: >
+    XADD {site_id}:gnode:comms:workflows:production *
+    execution_id wf-rolling_update-001
+    workflow_id rolling_update
+    description 'Rolling update (scope: ALL)'
+    params '{"scope":"ALL"}'
+    operator_id 7135101385
+    operator_name Niels
+    status pending
+    ts 2026-04-15T15:52:00Z

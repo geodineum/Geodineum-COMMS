@@ -1,15 +1,15 @@
 #!/bin/bash
-# GSD-COMMS Full Setup
+# Geodineum-COMMS Full Setup
 #
-# One-command setup for GSD-COMMS:
+# One-command setup for Geodineum-COMMS:
 #   1. Creates ACL user
 #   2. Builds the daemon
 #   3. Optionally installs systemd service
 #
 # Prerequisites:
-#   - GSD must be installed
+#   - gNode must be installed
 #   - Rust/Cargo must be installed
-#   - valkey-gsd.service must be running
+#   - valkey-gnode.service must be running
 #
 # Usage:
 #   ./scripts/setup.sh [--install-service]
@@ -31,7 +31,7 @@ while [[ $# -gt 0 ]]; do
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo ""
-            echo "Complete GSD-COMMS setup."
+            echo "Complete Geodineum-COMMS setup."
             echo ""
             echo "Options:"
             echo "  --install-service, -s   Also install systemd service (requires sudo)"
@@ -45,7 +45,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo "=============================================="
-echo "GSD-COMMS Setup"
+echo "Geodineum-COMMS Setup"
 echo "=============================================="
 echo ""
 
@@ -82,7 +82,7 @@ echo ""
 cargo build --release
 
 echo ""
-echo "   ✅ Build complete: $COMMS_DIR/target/release/gsd-comms"
+echo "   ✅ Build complete: $COMMS_DIR/target/release/geodineum-comms"
 echo ""
 
 # ============================================
@@ -113,27 +113,25 @@ echo ""
 # ============================================
 
 echo "=============================================="
-echo "✅ GSD-COMMS Setup Complete"
+echo "✅ Geodineum-COMMS Setup Complete"
 echo "=============================================="
 echo ""
 echo "📋 Quick Start:"
 echo ""
 echo "   # Test channels:"
-echo "   ./target/release/gsd-comms --redis-auth \"\$(cat .gsd/valkey_comms.password)\" test --site-id staging_nierto_com --channel all"
+echo "   ./target/release/geodineum-comms --redis-auth \"\$(cat .gnode/valkey_comms.password)\" test --site-id your_site --channel all"
 echo ""
 echo "   # Run daemon (foreground):"
-echo "   ./target/release/gsd-comms --redis-auth \"\$(cat .gsd/valkey_comms.password)\" start"
+echo "   ./target/release/geodineum-comms --redis-auth \"\$(cat .gnode/valkey_comms.password)\" start"
 echo ""
 
 if [[ "$INSTALL_SERVICE" == "true" ]]; then
     echo "   # Or use systemd:"
-    echo "   sudo systemctl start gsd-comms"
-    echo "   journalctl -u gsd-comms -f"
+    echo "   sudo systemctl start geodineum-comms"
+    echo "   journalctl -u geodineum-comms -f"
 else
     echo "   # Or install as service:"
     echo "   sudo ./scripts/install-service.sh"
 fi
 
-echo ""
-echo "🌐 Dashboard: http://localhost:8080/dashboard"
 echo ""

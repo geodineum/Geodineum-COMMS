@@ -1,232 +1,169 @@
-# GSD-COMMS
+<p align="center">
+  <a href="https://geodineum.com">
+    <img src=".github/geodineum-logo.png" alt="Geodineum" width="128">
+  </a>
+</p>
 
-**Notification Daemon for GSD** - Dispatches notifications via email, Telegram, and SMS based on messages in GSD comms streams.
+# Geodineum-COMMS
 
-## Overview
+The notification daemon of a Geodineum Constellation: it consumes per-site
+message streams from ValKey and dispatches them to email, Telegram, and SMS,
+archiving every message to SQLite.
 
-GSD-COMMS is a Rust daemon that:
+Built by **Niels Erik Toren** · Rust daemon, crate `geodineum-comms` (see `Cargo.toml` for the version)
 
-1. **Listens** to GSD comms streams (`{site_id}:gsd:comms:{environment}`) via consumer groups
-2. **Routes** messages based on type, priority, and per-site configuration
-3. **Dispatches** notifications through configurable channels (email, Telegram, SMS)
-4. **Retries** failed deliveries with exponential backoff
-5. **Provides** an admin dashboard for configuration and monitoring
+---
 
-## Quick Start
+## What it is
 
-```bash
-# Build
-cargo build --release
+Geodineum-COMMS is a stateless [tokio](https://tokio.rs) daemon and the
+companion of `gNode` - both talk to the same ValKey instance (port 47445) under
+separate ACL users. Services never call it directly: they `XADD` a message onto
+their site's comms stream, and the daemon consumes it, routes it to the enabled
+channels, and writes a durable record to a per-site SQLite archive.
 
-# Run with default settings (requires ValKey connection)
-./target/release/gsd-comms --redis-auth "$(cat .gsd/valkey_comms.password)" start
+It holds no message state of its own. A ValKey stream entry is acknowledged only
+after its SQLite archive commits, so a restart resumes cleanly from the last
+acknowledgement and nothing in flight is lost. The operator view lives in the
+Constellation's wp-admin (Geodineum → Comms), not in this daemon.
 
-# Test channels for a site
-./target/release/gsd-comms test --site-id staging_nierto_com --channel email
+## Public build surface
+
+You integrate with COMMS by **producing a message**, not by calling an API. The
+supported surface is the **comms message wire format** - the fields you `XADD`
+onto `{site_id}:gnode:comms:{env}`. Any language that can write a ValKey stream
+entry can drive it; the exact field table (scalars plus the JSON-string
+`sender` / `content` / `metadata` / `dispatch` fields) is in
+**[`CONTRACT.md`](CONTRACT.md)**, its single home.
+
+Most producers never assemble the fields by hand - the **gNode-Client** library
+(`queueCommsMessage` / `queueContactForm`) emits exactly this shape from PHP.
+
+- **Operator surface** - the `geodineum-comms` binary and the `geodineum comms`
+  manifest verbs (status, test-send, contract) inspect and exercise the daemon.
+  Run `geodineum-comms --help` for the current subcommands; they are an operator
+  tool, not a build target.
+- **Internal** - everything under `src/` (the consumer, router, channels,
+  templating, retry, persistence, and inbound modules) is implementation and may
+  change without notice.
+
+## Capabilities
+
+- **Multi-channel dispatch** - email (SMTP), Telegram (Bot API), and SMS
+  (Twilio), selected per message by type, priority, and per-site routing rules.
+- **Durable archive with an acknowledgement fence** - every message is written
+  to a per-site SQLite database; the ValKey entry is `XACK`ed only after that
+  write succeeds, so ValKey and the archive never disagree.
+- **Selective retry** - a channel that fails after acknowledgement is
+  re-dispatched from stream history with exponential backoff, and only the
+  failed channels are retried; routing and filters re-apply each time.
+- **Non-production send gate** - only a `production` environment permits real
+  sends; anything else is logged as a dry-run and archived, but no email, SMS, or
+  Telegram is fired.
+- **Zero-restart onboarding** - site streams are re-discovered on an interval, so
+  a site added after the daemon starts is consumed without a restart.
+- **Per-site configuration** - channels, recipients, priority/type filters, rate
+  limits, and retention are configured per site in ValKey, independent of the
+  daemon.
+- **Two-way operator chat** - an inbound Telegram path turns operator replies
+  into commands and workflow dispatches routed back to the originating component.
+
+## Contract
+
+The precise integration surface - every wire field, the stream and
+settings-key layout, the DTAP send gate, the SQLite schema, and the public Rust
+types - is in **[`CONTRACT.md`](CONTRACT.md)**. Agents should prime from
+**[`CONTRACT.scn.md`](CONTRACT.scn.md)**. Print it on a host any time with
+`geodineum comms contract`.
+
+## Quick start
+
+The Geodineum installer builds the binary, provisions the ACL user, and installs
+the service; these commands assume a running daemon.
+
+```php
+// Produce a message the way most callers do - via gNode-Client, which emits the
+// exact comms wire shape and injects the site's credentials.
+use gCore\gNode\gNodeClient;
+
+$client = gNodeClient::forSite('mysite', 'production');
+$client->queueContactForm('Jane Doe', 'jane@example.com', 'Hello', 'Interested in a demo.');
 ```
 
-## Architecture
-
-```
-GSD Client (PHP)
-       ↓ XADD
-ValKey Comms Stream ({site_id}:gsd:comms:{env})
-       ↓ XREADGROUP
-GSD-COMMS Daemon
-  ├── Stream Consumer (multi-site discovery)
-  ├── Message Router (type/priority/settings)
-  ├── Channel Providers
-  │   ├── Email (SMTP via lettre)
-  │   ├── Telegram (Bot API via reqwest)
-  │   └── SMS (Twilio API via reqwest)
-  ├── Template Engine (Tera)
-  ├── Retry Manager (exponential backoff)
-  └── Spam Filter (keyword/IP blocklists)
-       ↓
-Admin Dashboard (Axum + Htmx)
+```sh
+# The daemon consumes, dispatches, and archives it. Inspect the result:
+systemctl status geodineum-comms
+geodineum-comms messages --site-id mysite --limit 5   # the archived message + its status
+geodineum comms status                                # daemon state + per-stream counts
 ```
 
-## Configuration
+To produce the message without PHP, `XADD` it directly. The braces are a literal
+ValKey cluster hash-tag - write `{mysite}`, not `mysite`:
 
-### Per-Site Settings
-
-Each site stores its notification settings in ValKey at `{site_id}:comms:config`:
-
-```yaml
-site_id: staging_nierto_com
-enabled: true
-
-channels:
-  email:
-    enabled: true
-    config:
-      smtp_host: smtp.example.com
-      smtp_port: 587
-      smtp_user: notifications@example.com
-      smtp_pass: "encrypted:..."
-      from_email: notifications@example.com
-      from_name: "My Site Notifications"
-    recipients:
-      - email: admin@example.com
-        types: ["all"]
-        min_priority: 3
-
-  telegram:
-    enabled: true
-    config:
-      bot_token: "encrypted:..."
-      chat_id: "-1001234567890"
-    recipients:
-      - chat_id: "-1001234567890"
-        types: ["alert", "error"]
-        min_priority: 2
-
-routing_rules:
-  - type: contact
-    channels: [email]
-  - type: alert
-    channels: [email, telegram, sms]
-    priority_override: 1
+```sh
+# Authenticate as the producing site's ACL user (the same credential gNode-Client uses).
+AUTH="$(sudo cat /etc/geodineum/credentials/mysite.password)"
+REDISCLI_AUTH="$AUTH" redis-cli -p 47445 XADD '{mysite}:gnode:comms:production' '*' \
+    id "$(uuidgen)" type contact timestamp "$(date -Iseconds)" \
+    environment production priority 3 \
+    content  '{"subject":"New contact","body":"Interested in a demo."}' \
+    dispatch '{"channels":["email"],"status":"pending","attempts":0}'
 ```
 
-### CLI Options
+The full field table and every optional field are in
+[`CONTRACT.md`](CONTRACT.md).
 
-```
-gsd-comms [OPTIONS] [COMMAND]
+## Limits worth knowing
 
-Options:
-  --redis-host <HOST>    ValKey host [default: 127.0.0.1]
-  --redis-port <PORT>    ValKey port [default: 47445]
-  --redis-user <USER>    ACL username [default: gsd_comms]
-  --redis-auth <AUTH>    ACL password
-  --config <PATH>        Config file [default: config/default.yaml]
-  --log-level <LEVEL>    Log level [default: info]
-  --api-port <PORT>      Dashboard port [default: 8080]
-  --environment <ENV>    DTAP environment [default: production]
+- **Only `production` sends for real.** In any other environment the daemon
+  archives the message and logs a dry-run line but fires nothing - start it with
+  `--allow-nonprod-send` to override.
+- **Per-site secrets are stored as plain values**, guarded by the ValKey ACL.
+  There is no encryption at rest for the SQLite archive either; rely on
+  filesystem-level protection. The `encrypt` CLI verb is a stub.
+- **Some CLI verbs are stubs** - `stop` and `status` print a pointer to the
+  systemd unit rather than acting on the daemon.
+- **The inbound Telegram chat is beta** for this release.
+- **SMS rate limiting is operator-configured** - there is no automatic
+  carrier-feedback throttling.
+- **Message `type` and dispatch `status` are not enum-validated on the wire**  - 
+  any string is stored. Send the documented values.
 
-Commands:
-  start     Start the daemon
-  stop      Stop the daemon
-  status    Check daemon status
-  test      Test notification channels
-  encrypt   Encrypt a secret value
-```
+## Collaborate
 
-## Message Format
+Contributions are welcome. Open issues and pick up work on the ecosystem board
+at [geodineum.com](https://geodineum.com); issues tagged `good-first-issue` are
+a good place to start.
 
-Messages in the comms stream follow this structure:
+- Fork, branch, and open a pull request against `main`.
+- Any change to a wire contract must update **both** `CONTRACT.md` and
+  `CONTRACT.scn.md` in the same commit.
+- A change to a signed extension must be re-signed in the same commit.
 
-```json
-{
-  "id": "uuid",
-  "type": "contact|alert|error|system",
-  "timestamp": "ISO-8601",
-  "site_id": "site_name",
-  "priority": 1-5,
-  "sender": {
-    "name": "string",
-    "email": "string",
-    "phone": "string"
-  },
-  "content": {
-    "subject": "string",
-    "body": "string"
-  },
-  "dispatch": {
-    "channels": ["email", "telegram"],
-    "status": "pending"
-  }
-}
-```
+## Author & support
 
-## Admin Dashboard
+Built by **Niels Erik Toren**.
 
-Access the dashboard at `http://localhost:8080/dashboard`:
+If you want to support the work:
 
-- **Overview**: Statistics and recent messages
-- **Sites**: Configure per-site notification settings
-- **Messages**: View message history and retry failed deliveries
-- **Settings**: Global configuration
+| Currency | Address |
+|---|---|
+| Bitcoin (BTC) | `bc1qwf78fjgapt2gcts4mwf3gnfkclvqgtlg4gpu4d` |
+| Ethereum (ETH) | `0xf38b517Dd2005d93E0BDc1e9807665074c5eC731` / `nierto.eth` |
+| Monero (XMR) | `8BPaSoq1pEJH4LgbGNQ92kFJA3oi2frE4igHvdP9Lz2giwhFo2VnNvGT8XABYasjtoVY2Qb3LVHv6CP3qwcJ8UnyRtjWRZ5` |
 
-## Channel Providers
+## Disclaimer
 
-### Email (SMTP)
-
-Uses [lettre](https://github.com/lettre/lettre) for async SMTP with:
-- Connection pooling
-- TLS/STARTTLS support
-- HTML + plaintext multipart emails
-
-### Telegram
-
-Uses the [Telegram Bot API](https://core.telegram.org/bots/api) directly via reqwest:
-- MarkdownV2 formatting
-- Channel and group posting
-- Rate limiting (30 msg/sec)
-
-### SMS (Twilio)
-
-Uses the [Twilio REST API](https://www.twilio.com/docs/sms/api) via reqwest:
-- International number support
-- Message truncation (1600 char limit)
-- Cost-controlled rate limiting (10 msg/min default)
-
-## Integration with GSD
-
-GSD-COMMS uses the same ValKey instance as GSD but with a separate ACL user:
-
-```bash
-# Create ACL user for GSD-COMMS
-./scripts/create-acl-user.sh gsd_comms
-```
-
-Required permissions:
-- `+xreadgroup +xack +xpending +xclaim` - Stream consumer operations
-- `+get +set +hget +hset` - Settings storage
-- `~*:gsd:comms:*` - Comms streams (all sites)
-- `~*:comms:config` - Settings keys
-- `~gsd:site:*:meta` - Site discovery (read-only)
-
-## Directory Structure
-
-```
-GSD-COMMS/
-├── Cargo.toml
-├── CLAUDE.md              # LLM context document
-├── config/
-│   ├── default.yaml       # Default configuration
-│   └── templates/         # Notification templates
-│       ├── email/
-│       ├── telegram/
-│       └── sms/
-├── scripts/
-│   └── install-service.sh
-└── src/
-    ├── main.rs            # Entry point
-    ├── lib.rs             # Library exports
-    ├── api/               # Admin dashboard
-    ├── channels/          # Notification providers
-    ├── consumer/          # Stream consumer
-    ├── filters/           # Spam detection
-    ├── retry/             # Retry logic
-    ├── router/            # Message routing
-    ├── settings/          # Site configuration
-    └── templates/         # Template rendering
-```
-
-## Development
-
-```bash
-# Build debug
-cargo build
-
-# Run tests
-cargo test
-
-# Run with debug logging
-RUST_LOG=debug cargo run -- --redis-auth "..." start
-```
+This software is provided **"as is"**, without warranty of any kind, express or
+implied. Use of this software is entirely at your own risk. In no event shall the
+author or contributors be held liable for any damages arising from the use or
+inability to use this software.
 
 ## License
 
-Same as GSD - see the main repository for details.
+Licensed under either of
+
+* [Apache License, Version 2.0](LICENSE-APACHE)
+* [MIT License](LICENSE-MIT)
+
+at your option.

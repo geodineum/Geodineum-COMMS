@@ -1,19 +1,19 @@
 #!/bin/bash
-# GSD-COMMS ACL User Setup
+# Geodineum-COMMS ACL User Setup
 #
-# Creates the gsd_comms ACL user with permissions to:
-#   - Read ALL site comms streams (*:gsd:comms:*)
+# Creates the geodineum_comms ACL user with permissions to:
+#   - Read ALL site comms streams (*:gnode:comms:*)
 #   - Write comms config and retry state (*:comms:config, *:comms:*)
-#   - Read GSD site registry for discovery (gsd:site:*:meta)
+#   - Read gNode site registry for discovery (gnode:site:*:meta)
 #   - Use FCALL for Lua functions
 #
 # Prerequisites:
-#   - GSD must be installed at /opt/geodineum/GSD or /opt/GSD
-#   - valkey-gsd.service must be running
-#   - gsd_daemon credentials must exist
+#   - gNode must be installed at /opt/geodineum/gNode or /opt/gNode
+#   - valkey-gnode.service must be running
+#   - gnode_daemon credentials must exist
 #
 # Usage:
-#   ./setup-acl-user.sh [--gsd-dir /path/to/gsd]
+#   ./setup-acl-user.sh [--gnode-dir /path/to/gNode]
 
 set -euo pipefail
 
@@ -24,11 +24,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMMS_DIR="$(dirname "$SCRIPT_DIR")"
 
-# Find GSD installation
-GSD_DIR=""
-for candidate in "/opt/geodineum/GSD" "/opt/GSD"; do
+# Find gNode installation
+GNODE_DIR=""
+for candidate in "/opt/geodineum/gNode" "/opt/gNode"; do
     if [[ -d "$candidate" && -f "$candidate/scripts/valkey-cli-secure.sh" ]]; then
-        GSD_DIR="$candidate"
+        GNODE_DIR="$candidate"
         break
     fi
 done
@@ -36,22 +36,22 @@ done
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --gsd-dir)
-            GSD_DIR="$2"
+        --gnode-dir)
+            GNODE_DIR="$2"
             shift 2
             ;;
         --help|-h)
-            echo "Usage: $0 [--gsd-dir /path/to/gsd]"
+            echo "Usage: $0 [--gnode-dir /path/to/gNode]"
             echo ""
-            echo "Creates the gsd_comms ACL user for GSD-COMMS daemon."
+            echo "Creates the geodineum_comms ACL user for Geodineum-COMMS daemon."
             echo ""
             echo "Options:"
-            echo "  --gsd-dir    Path to GSD installation (auto-detected if not specified)"
+            echo "  --gnode-dir    Path to gNode installation (auto-detected if not specified)"
             echo ""
             echo "Prerequisites:"
-            echo "  - GSD must be installed"
-            echo "  - valkey-gsd.service must be running"
-            echo "  - gsd_daemon credentials must exist"
+            echo "  - gNode must be installed"
+            echo "  - valkey-gnode.service must be running"
+            echo "  - gnode_daemon credentials must exist"
             exit 0
             ;;
         *)
@@ -61,33 +61,33 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ -z "$GSD_DIR" ]]; then
-    echo "Error: Could not find GSD installation"
-    echo "Checked: /opt/geodineum/GSD, /opt/GSD"
-    echo "Use --gsd-dir to specify the path"
+if [[ -z "$GNODE_DIR" ]]; then
+    echo "Error: Could not find gNode installation"
+    echo "Checked: /opt/geodineum/gNode, /opt/gNode"
+    echo "Use --gnode-dir to specify the path"
     exit 1
 fi
 
-if [[ ! -f "$GSD_DIR/scripts/valkey-cli-secure.sh" ]]; then
-    echo "Error: GSD installation at $GSD_DIR appears incomplete"
-    echo "Missing: $GSD_DIR/scripts/valkey-cli-secure.sh"
+if [[ ! -f "$GNODE_DIR/scripts/valkey-cli-secure.sh" ]]; then
+    echo "Error: gNode installation at $GNODE_DIR appears incomplete"
+    echo "Missing: $GNODE_DIR/scripts/valkey-cli-secure.sh"
     exit 1
 fi
 
-# Load GSD environment if available
-if [[ -f "$GSD_DIR/.env" ]]; then
-    source "$GSD_DIR/.env"
+# Load gNode environment if available
+if [[ -f "$GNODE_DIR/.env" ]]; then
+    source "$GNODE_DIR/.env"
 fi
 
-ACL_USER="gsd_comms"
-PASSWORD_DIR="${COMMS_DIR}/.gsd"
+ACL_USER="geodineum_comms"
+PASSWORD_DIR="${COMMS_DIR}/.gnode"
 PASSWORD_FILE="${PASSWORD_DIR}/valkey_comms.password"
 
 echo "=============================================="
-echo "GSD-COMMS ACL User Setup"
+echo "Geodineum-COMMS ACL User Setup"
 echo "=============================================="
 echo ""
-echo "GSD Directory: $GSD_DIR"
+echo "GSD Directory: $GNODE_DIR"
 echo "COMMS Directory: $COMMS_DIR"
 echo "ACL User: $ACL_USER"
 echo ""
@@ -99,26 +99,26 @@ echo ""
 echo "🔍 Checking prerequisites..."
 
 # Check ValKey is running
-if ! systemctl is-active --quiet valkey-gsd 2>/dev/null; then
-    echo "Error: valkey-gsd.service is not running"
-    echo "Start it with: sudo systemctl start valkey-gsd"
+if ! systemctl is-active --quiet valkey-gnode 2>/dev/null; then
+    echo "Error: valkey-gnode.service is not running"
+    echo "Start it with: sudo systemctl start valkey-gnode"
     exit 1
 fi
-echo "   ✅ valkey-gsd.service is running"
+echo "   ✅ valkey-gnode.service is running"
 
 # Check daemon credentials exist
-DAEMON_PASSWORD_FILE="$GSD_DIR/.gsd/valkey_daemon.password"
+DAEMON_PASSWORD_FILE="$GNODE_DIR/.gnode/valkey_daemon.password"
 if [[ ! -f "$DAEMON_PASSWORD_FILE" ]]; then
     echo "Error: Daemon password not found at $DAEMON_PASSWORD_FILE"
-    echo "GSD must be fully installed first"
+    echo "gNode must be fully installed first"
     exit 1
 fi
 echo "   ✅ Daemon credentials found"
 
 # Test daemon connection
-export VALKEY_USER=gsd_daemon
-if ! "$GSD_DIR/scripts/valkey-cli-secure.sh" PING >/dev/null 2>&1; then
-    echo "Error: Cannot connect to ValKey with gsd_daemon credentials"
+export VALKEY_USER=gnode_daemon
+if ! "$GNODE_DIR/scripts/valkey-cli-secure.sh" PING >/dev/null 2>&1; then
+    echo "Error: Cannot connect to ValKey with gnode_daemon credentials"
     exit 1
 fi
 echo "   ✅ ValKey connection verified"
@@ -149,51 +149,65 @@ echo ""
 echo "🔧 Creating ACL user: $ACL_USER"
 
 # Check if user already exists
-USER_CHECK=$("$GSD_DIR/scripts/valkey-cli-secure.sh" ACL GETUSER "$ACL_USER" 2>&1 || true)
+USER_CHECK=$("$GNODE_DIR/scripts/valkey-cli-secure.sh" ACL GETUSER "$ACL_USER" 2>&1 || true)
 if [[ "$USER_CHECK" != *"no such user"* && "$USER_CHECK" != *"ERR"* ]]; then
     echo "   ⚠️  User $ACL_USER already exists, resetting..."
 fi
 
 # Create/reset user with password
-"$GSD_DIR/scripts/valkey-cli-secure.sh" ACL SETUSER "$ACL_USER" on resetpass ">${PASSWORD}"
+"$GNODE_DIR/scripts/valkey-cli-secure.sh" ACL SETUSER "$ACL_USER" on resetpass ">${PASSWORD}"
 
 # ============================================
 # Set Keyspace Permissions
 # ============================================
 
-# GSD-COMMS needs access to:
-#   - ALL comms streams: *:gsd:comms:* (read messages from any site)
+# Geodineum-COMMS needs access to:
+#   - ALL comms streams: *:gnode:comms:* (read messages from any site)
 #   - Comms config: *:comms:config (per-site settings)
 #   - Comms retry state: *:comms:retry:* (retry management)
 #   - Comms messages tracking: *:comms:messages:* (dispatch status)
-#   - Site discovery: gsd:site:*:meta, gsd:sites:registry (read-only)
-#   - Global GSD keys: gsd:* (for routing info)
+#   - Site discovery: gnode:site:*:meta, gnode:sites:registry (read-only)
+#   - Global GSD keys: gnode:* (for routing info)
 #
 # The ~* pattern for comms is intentional - we need cross-site access
 
-"$GSD_DIR/scripts/valkey-cli-secure.sh" ACL SETUSER "$ACL_USER" resetkeys \
-    '~*:gsd:comms:*' \
+"$GNODE_DIR/scripts/valkey-cli-secure.sh" ACL SETUSER "$ACL_USER" resetkeys \
+    '~*:gnode:comms:*' \
     '~*:comms:config' \
     '~*:comms:retry:*' \
     '~*:comms:messages:*' \
     '~*:comms:stats:*' \
-    '~gsd:site:*' \
-    '~gsd:sites:*' \
-    '~gsd:routing:*' \
-    '~topology:*'
+    '~*:comms:conversation:*' \
+    '~*:comms:context:*' \
+    '~*:comms:active_context:*' \
+    '~gnode:site:*' \
+    '~gnode:sites:*' \
+    '~gnode:routing:*' \
+    '~topology:*' \
+    '~*:gnode:schema:*' \
+    '~*:gnode:unified:*' \
+    '~*:inference:metrics:*' \
+    '~*:inference:history:*'
 
 echo "   ✅ Set keyspace permissions"
-echo "      - *:gsd:comms:* (all site comms streams)"
+echo "      - *:gnode:comms:* (all site comms streams, incl. inbound)"
 echo "      - *:comms:config (per-site settings)"
 echo "      - *:comms:retry:* (retry state)"
 echo "      - *:comms:messages:* (tracking)"
-echo "      - gsd:site:* (site discovery)"
+echo "      - *:comms:conversation:* (inbound sessions)"
+echo "      - *:comms:context:* (reply-correlation contexts)"
+echo "      - *:comms:active_context:* (active context pointers)"
+echo "      - gnode:site:* (site discovery)"
+echo "      - *:gnode:schema:* (component schema registry)"
+echo "      - *:gnode:unified:* (inference service stream)"
+echo "      - *:inference:metrics:* (pipeline status reads)"
+echo "      - *:inference:history:* (conversation history reads)"
 
 # ============================================
 # Set Channel Permissions
 # ============================================
 
-"$GSD_DIR/scripts/valkey-cli-secure.sh" ACL SETUSER "$ACL_USER" resetchannels "&*"
+"$GNODE_DIR/scripts/valkey-cli-secure.sh" ACL SETUSER "$ACL_USER" resetchannels "&*"
 
 echo "   ✅ Set channel permissions (all channels)"
 
@@ -206,11 +220,12 @@ echo "   ✅ Set channel permissions (all channels)"
 # Hash operations (site metadata)
 # Utility operations
 
-"$GSD_DIR/scripts/valkey-cli-secure.sh" ACL SETUSER "$ACL_USER" nocommands \
+"$GNODE_DIR/scripts/valkey-cli-secure.sh" ACL SETUSER "$ACL_USER" nocommands \
     +xread +xreadgroup +xadd +xack +xclaim +xautoclaim +xpending +xinfo +xlen +xtrim +xrange +xrevrange +xgroup +xdel \
     +fcall +fcall_ro \
     +get +set +setex +setnx +psetex +del +exists +ttl +pttl +expire +pexpire +mget +mset +incr +decr +incrby +decrby +append \
     +hget +hset +hgetall +hdel +hexists +hkeys +hvals +hincrby +hincrbyfloat +hmget +hmset +hsetnx +hlen +hscan \
+    +lrange +llen +lpush +rpush +lpop +rpop \
     +sadd +smembers +sismember +srem +scard +sscan \
     +keys +scan +type +object \
     +ping +echo +time +client +auth +select
@@ -227,7 +242,7 @@ echo "      - Utility: keys, scan, ping, time..."
 # Save ACL Configuration
 # ============================================
 
-"$GSD_DIR/scripts/valkey-cli-secure.sh" ACL SAVE
+"$GNODE_DIR/scripts/valkey-cli-secure.sh" ACL SAVE
 
 echo "   ✅ Saved ACL configuration to disk"
 echo ""
@@ -239,15 +254,15 @@ echo ""
 echo "📡 Setting up consumer groups for existing sites..."
 
 # Discover existing comms streams
-COMMS_STREAMS=$("$GSD_DIR/scripts/valkey-cli-secure.sh" KEYS "*:gsd:comms:*" 2>/dev/null || echo "")
+COMMS_STREAMS=$("$GNODE_DIR/scripts/valkey-cli-secure.sh" KEYS "*:gnode:comms:*" 2>/dev/null || echo "")
 
 if [[ -n "$COMMS_STREAMS" ]]; then
-    CONSUMER_GROUP="gsd_comms_dispatch"
+    CONSUMER_GROUP="geodineum_comms_dispatch"
 
     while IFS= read -r stream; do
         if [[ -n "$stream" ]]; then
             # Try to create consumer group (ignore if exists)
-            if "$GSD_DIR/scripts/valkey-cli-secure.sh" XGROUP CREATE "$stream" "$CONSUMER_GROUP" 0 MKSTREAM 2>/dev/null; then
+            if "$GNODE_DIR/scripts/valkey-cli-secure.sh" XGROUP CREATE "$stream" "$CONSUMER_GROUP" 0 MKSTREAM 2>/dev/null; then
                 echo "   ✅ Created group $CONSUMER_GROUP on $stream"
             else
                 echo "   ⏭️  Group exists: $CONSUMER_GROUP on $stream"
@@ -269,7 +284,7 @@ echo "🔍 Verifying setup..."
 export VALKEY_USER="$ACL_USER"
 export REDISCLI_AUTH="$PASSWORD"
 
-if "$GSD_DIR/scripts/valkey-cli-secure.sh" PING >/dev/null 2>&1; then
+if "$GNODE_DIR/scripts/valkey-cli-secure.sh" PING >/dev/null 2>&1; then
     echo "   ✅ Authentication successful"
 else
     echo "   ❌ Authentication failed!"
@@ -277,13 +292,13 @@ else
 fi
 
 # Test read access to site discovery
-SITE_COUNT=$("$GSD_DIR/scripts/valkey-cli-secure.sh" KEYS "gsd:site:*:meta" 2>/dev/null | wc -l || echo "0")
+SITE_COUNT=$("$GNODE_DIR/scripts/valkey-cli-secure.sh" KEYS "gnode:site:*:meta" 2>/dev/null | wc -l || echo "0")
 echo "   ✅ Site discovery access verified ($SITE_COUNT sites found)"
 
 # Test read access to comms streams (if any exist)
 if [[ -n "$COMMS_STREAMS" ]]; then
     FIRST_STREAM=$(echo "$COMMS_STREAMS" | head -1)
-    if "$GSD_DIR/scripts/valkey-cli-secure.sh" XINFO STREAM "$FIRST_STREAM" >/dev/null 2>&1; then
+    if "$GNODE_DIR/scripts/valkey-cli-secure.sh" XINFO STREAM "$FIRST_STREAM" >/dev/null 2>&1; then
         echo "   ✅ Comms stream access verified ($FIRST_STREAM)"
     fi
 fi
@@ -291,7 +306,7 @@ fi
 echo ""
 
 # ============================================
-# Create Symlink to GSD cli tool
+# Create Symlink to gNode cli tool
 # ============================================
 
 echo "🔗 Creating utility symlinks..."
@@ -302,31 +317,31 @@ mkdir -p "$COMMS_SCRIPTS_DIR"
 # Create a wrapper script for valkey-cli with COMMS credentials
 cat > "$COMMS_SCRIPTS_DIR/valkey-cli-comms.sh" << 'WRAPPER_EOF'
 #!/bin/bash
-# ValKey CLI wrapper with GSD-COMMS credentials
+# ValKey CLI wrapper with Geodineum-COMMS credentials
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMMS_DIR="$(dirname "$SCRIPT_DIR")"
 
-# Find GSD installation
-GSD_DIR=""
-for candidate in "/opt/geodineum/GSD" "/opt/GSD"; do
+# Find gNode installation
+GNODE_DIR=""
+for candidate in "/opt/geodineum/gNode" "/opt/gNode"; do
     if [[ -d "$candidate" && -f "$candidate/scripts/valkey-cli-secure.sh" ]]; then
-        GSD_DIR="$candidate"
+        GNODE_DIR="$candidate"
         break
     fi
 done
 
-if [[ -z "$GSD_DIR" ]]; then
-    echo "Error: GSD installation not found" >&2
+if [[ -z "$GNODE_DIR" ]]; then
+    echo "Error: gNode installation not found" >&2
     exit 1
 fi
 
 # Use COMMS credentials
-export VALKEY_USER="${VALKEY_USER:-gsd_comms}"
-export REDISCLI_AUTH="${REDISCLI_AUTH:-$(cat "$COMMS_DIR/.gsd/valkey_comms.password" 2>/dev/null || echo "")}"
+export VALKEY_USER="${VALKEY_USER:-geodineum_comms}"
+export REDISCLI_AUTH="${REDISCLI_AUTH:-$(cat "$COMMS_DIR/.gnode/valkey_comms.password" 2>/dev/null || echo "")}"
 
-exec "$GSD_DIR/scripts/valkey-cli-secure.sh" "$@"
+exec "$GNODE_DIR/scripts/valkey-cli-secure.sh" "$@"
 WRAPPER_EOF
 
 chmod +x "$COMMS_SCRIPTS_DIR/valkey-cli-comms.sh"
@@ -339,7 +354,7 @@ echo ""
 # ============================================
 
 echo "=============================================="
-echo "✅ GSD-COMMS ACL Setup Complete"
+echo "✅ Geodineum-COMMS ACL Setup Complete"
 echo "=============================================="
 echo ""
 echo "📋 Created Resources:"
@@ -350,24 +365,24 @@ echo ""
 echo "🔑 Permissions Summary:"
 echo ""
 echo "   Keyspace Access:"
-echo "     - *:gsd:comms:* (ALL site comms streams)"
+echo "     - *:gnode:comms:* (ALL site comms streams)"
 echo "     - *:comms:config (per-site notification settings)"
 echo "     - *:comms:retry:* (retry state management)"
 echo "     - *:comms:messages:* (dispatch tracking)"
-echo "     - gsd:site:* (site discovery - read)"
+echo "     - gnode:site:* (site discovery - read)"
 echo ""
-echo "   Consumer Group: gsd_comms_dispatch"
+echo "   Consumer Group: geodineum_comms_dispatch"
 echo ""
 echo "📋 Next Steps:"
 echo ""
-echo "   1. Build GSD-COMMS:"
+echo "   1. Build Geodineum-COMMS:"
 echo "      cd $COMMS_DIR && cargo build --release"
 echo ""
 echo "   2. Test the daemon:"
-echo "      ./target/release/gsd-comms --redis-auth \"\$(cat $PASSWORD_FILE)\" test --site-id staging_nierto_com --channel all"
+echo "      ./target/release/geodineum-comms --redis-auth \"\$(cat $PASSWORD_FILE)\" test --site-id your_site --channel all"
 echo ""
 echo "   3. Run the daemon:"
-echo "      ./target/release/gsd-comms --redis-auth \"\$(cat $PASSWORD_FILE)\" start"
+echo "      ./target/release/geodineum-comms --redis-auth \"\$(cat $PASSWORD_FILE)\" start"
 echo ""
 echo "   4. Or install as systemd service:"
 echo "      sudo ./scripts/install-service.sh"
@@ -378,5 +393,5 @@ echo "   # Using the wrapper script:"
 echo "   $COMMS_SCRIPTS_DIR/valkey-cli-comms.sh PING"
 echo ""
 echo "   # Or manually:"
-echo "   VALKEY_USER=gsd_comms REDISCLI_AUTH=\"\$(cat $PASSWORD_FILE)\" $GSD_DIR/scripts/valkey-cli-secure.sh PING"
+echo "   VALKEY_USER=geodineum_comms REDISCLI_AUTH=\"\$(cat $PASSWORD_FILE)\" $GNODE_DIR/scripts/valkey-cli-secure.sh PING"
 echo ""

@@ -4,9 +4,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::error::{CommsError, Result};
+use crate::error::Result;
 
-/// A message from the GSD comms stream
+/// A message from the gNode comms stream
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommsMessage {
     /// Unique message ID (used for idempotency)
@@ -36,12 +36,25 @@ pub struct CommsMessage {
     #[serde(default)]
     pub metadata: HashMap<String, serde_json::Value>,
 
+    /// DTAP environment of the originating site. Authoritative for non-prod
+    /// side-effect gating (see crate::dtap): the producer SHOULD stamp this so
+    /// a non-prod message mis-routed onto the production stream is still caught.
+    /// Defaults to "production" only when neither the producer nor the stream
+    /// suffix supplies it — parse_message resolves it explicitly from the
+    /// stream key so a real message always carries a concrete value.
+    #[serde(default = "default_environment")]
+    pub environment: String,
+
     /// Dispatch status
     pub dispatch: Option<DispatchInfo>,
 }
 
 fn default_priority() -> u8 {
     3
+}
+
+fn default_environment() -> String {
+    "production".to_string()
 }
 
 /// Sender information from the comms message
@@ -59,8 +72,31 @@ pub struct SenderInfo {
 pub struct MessageContent {
     pub subject: Option<String>,
     pub body: Option<String>,
-    #[serde(default)]
+    /// Attachments — accepts both JSON object {} and array [] (PHP sends [] for empty)
+    #[serde(default, deserialize_with = "deserialize_attachments")]
     pub attachments: HashMap<String, serde_json::Value>,
+}
+
+/// Deserialize attachments from either a JSON object or array.
+/// PHP's json_encode sends empty attachments as `[]` (array) rather than `{}` (object),
+/// which would fail HashMap deserialization and null out the entire MessageContent struct.
+fn deserialize_attachments<'de, D>(deserializer: D) -> std::result::Result<HashMap<String, serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Deserialize;
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Object(map) => Ok(map.into_iter().collect()),
+        serde_json::Value::Array(arr) => {
+            let mut map = HashMap::new();
+            for (i, v) in arr.into_iter().enumerate() {
+                map.insert(i.to_string(), v);
+            }
+            Ok(map)
+        }
+        _ => Ok(HashMap::new()),
+    }
 }
 
 /// Dispatch status information

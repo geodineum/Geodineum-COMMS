@@ -1,16 +1,11 @@
-# GSD-COMMS Default Configuration
+# Geodineum-COMMS Default Configuration
 # Copy to config/local.yaml and customize for your environment
 
 valkey:
   host: 127.0.0.1
   port: 47445
-  user: gsd_comms
+  user: geodineum_comms
   # password: set via VALKEY_AUTH env var or CLI flag
-
-api:
-  bind: 127.0.0.1
-  port: 8080
-  enable_dashboard: true
 
 consumer:
   # How long to block waiting for messages (ms)
@@ -40,3 +35,24 @@ spam_filter:
     - crypto investment
   # IP addresses to block
   ip_blocklist: []
+
+# ── Inbound: Bidirectional Telegram integration ──────────────────────
+# Enables operator interaction via Telegram (TheGlobe conversation engine).
+#
+# Secrets should be supplied via the env file (NOT this YAML), which lives at:
+#   /etc/geodineum/components/geodineum-comms/geodineum-comms.env
+#
+# Supported env vars (override any YAML values):
+#   TELEGRAM_BOT_TOKEN        — bot token from @BotFather
+#   COMMS_INBOUND_SITE        — site_id to bind to (default: geodine)
+#   COMMS_INBOUND_PIPELINE    — default pipeline (default: sysadmin)
+#   COMMS_ADMIN_IDS           — comma-separated Telegram user IDs
+#   COMMS_INFERENCE_CHAIN     — "true" to enable the staged draft→review→guard chain
+#
+# Inbound activates automatically when TELEGRAM_BOT_TOKEN is set. This YAML
+# section is optional — it exists only to document non-secret defaults.
+#
+# inbound:
+#   site_id: geodine
+#   default_pipeline: sysadmin
+#   inference_chain_enabled: false

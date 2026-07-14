@@ -1,0 +1,55 @@
+[Unit]
+Description=Geodineum-COMMS Notification Daemon
+After=network.target valkey-gnode.service gnode-daemon.service
+Wants=valkey-gnode.service gnode-daemon.service
+# These keys belong in [Unit] — modern systemd ignores them under
+# [Service] ("Unknown key name"), so the restart rate-limit would
+# never apply there. The window key is named StartLimitIntervalSec.
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+[Service]
+Type=simple
+# Dedicated runtime identity — COMMS does not share the gnode user.
+# Credential reads come via the geodineum-comms group
+# (valkey_comms.password, smtp_comms.* at root:geodineum-comms 0640);
+# bootstrap.env via supplementary geodineum-bootstrap membership.
+User=geodineum-comms
+Group=geodineum-comms
+SupplementaryGroups=geodineum-bootstrap
+WorkingDirectory=/opt/geodineum/Geodineum-COMMS
+
+Environment="RUST_LOG=geodineum_comms=info"
+
+# Load component-specific secrets (TELEGRAM_BOT_TOKEN, COMMS_ADMIN_IDS, etc.)
+# File is created by the operator — not in the repo. Missing file is non-fatal.
+EnvironmentFile=-/etc/geodineum/components/geodineum-comms/geodineum-comms.env
+
+# No ExecStartPre chmod here — it could never work under
+# ProtectSystem=strict (read-only /opt) and the installer's
+# geodeploy_fix_binaries owns executable bits.
+# No --api-port/--api-bind flags — the Admin API was removed; clap
+# exits status=2 on an unknown argument.
+ExecStart=/bin/bash -c 'exec /opt/geodineum/Geodineum-COMMS/target/release/geodineum-comms \
+    --redis-auth "$(cat /etc/geodineum/credentials/valkey_comms.password)" \
+    --log-level info \
+    start'
+
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/opt/geodineum/Geodineum-COMMS/.gnode /opt/geodineum/Geodineum-COMMS/logs /var/lib/geodineum-comms
+
+LimitNOFILE=65536
+TasksMax=4096
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=geodineum-comms
+
+[Install]
+WantedBy=multi-user.target

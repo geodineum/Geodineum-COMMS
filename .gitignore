@@ -1,3 +1,8 @@
+# Hidden files/dirs — strict policy: keep them out
+.*
+!.gitignore
+!.gitattributes
+
 # Build artifacts
 /target/
 Cargo.lock
@@ -15,7 +20,7 @@ Cargo.lock
 .env.*.local
 
 # Secrets
-.gsd/
+.gnode/
 *.password
 *.key
 *.pem
@@ -35,3 +40,27 @@ Thumbs.db
 *.profraw
 *.profdata
 coverage/
+
+# Internal session/handoff documents (not for public release)
+CLAUDE.md
+*.scn.md
+# …except the permanent contract primer, which is tracked alongside CONTRACT.md
+!CONTRACT.scn.md
+SESSION_*.md
+MISSION_*.md
+AUDIT_*.md
+
+# Phase-2 work-in-progress preserved on dev boxes (Commit 1.6.a untracked
+# these from the repo per CM-D1.01 + CM-D1.02 but the operator retains them
+# locally for ongoing Phase-2 feature work).
+#   - src/api/         : REST dashboard / routes / auth — never wired into
+#                        main.rs at Ch.1; restore from `main` branch or pre-
+#                        1.6.a history when wiring work resumes.
+#   - src/inbound/spr_engine.rs : SPR-compressed conversation context — also
+#                        never wired; Phase-2 target for CommandAction::Inference
+#                        prompt assembly.
+src/api/
+src/inbound/spr_engine.rs
+.claude/
+*.bak
+CLAUDE.md.bak

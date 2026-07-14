@@ -5,7 +5,6 @@ use rand::Rng;
 use redis::aio::MultiplexedConnection;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::error::{CommsError, Result};
@@ -46,7 +45,7 @@ impl RetryManager {
 
     /// Get the ValKey key for retry state
     fn retry_key(site_id: &str, message_id: &str) -> String {
-        format!("{}:comms:retry:{}", site_id, message_id)
+        format!("{{{}}}:comms:retry:{}", site_id, message_id)
     }
 
     /// Calculate next retry time using exponential backoff with jitter
@@ -179,12 +178,9 @@ impl RetryManager {
     pub async fn get_due_retries(&self) -> Result<Vec<RetryState>> {
         let mut conn = self.conn.clone();
 
-        // Scan for retry keys
-        let keys: Vec<String> = redis::cmd("KEYS")
-            .arg("*:comms:retry:*")
-            .query_async(&mut conn)
-            .await
-            .map_err(CommsError::ValKey)?;
+        // an earlier hardening pass: SCAN cursor instead of blocking KEYS — this runs on
+        // every retry tick, KEYS at scale would lock the main thread.
+        let keys = crate::valkey_scan::scan_keys(&mut conn, "*:comms:retry:*").await?;
 
         let now = Utc::now();
         let mut due = Vec::new();

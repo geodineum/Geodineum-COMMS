@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, info, instrument};
 
 use crate::channels::channel::{
     ChannelConfig, CommsMessage, NotificationChannel, RateLimit, RecipientConfig, RenderedContent,
@@ -36,6 +36,7 @@ impl TwilioConfig {
 
 /// Twilio API response
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)] // serde shape — fields populated from API JSON for Debug logging
 struct TwilioResponse {
     sid: Option<String>,
     status: Option<String>,

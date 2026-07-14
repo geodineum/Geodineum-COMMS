@@ -25,17 +25,39 @@ use crate::templates::TemplateRenderer;
 /// SMTP-specific configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SmtpConfig {
+    #[serde(default = "default_smtp_host")]
     pub smtp_host: String,
+    #[serde(default = "default_smtp_port")]
     pub smtp_port: u16,
+    // gCore's Comms admin does not write auth fields for a localhost relay;
+    // empty user ⇒ no SMTP auth (see get_transport). Required-but-absent here
+    // was the "missing field smtp_user" launch bug.
+    #[serde(default)]
     pub smtp_user: String,
+    #[serde(default)]
     pub smtp_pass: String,
+    // gCore writes `from_address`; accept it as an alias so a UI-configured site
+    // deserializes without a schema migration ("missing field from_email" bug).
+    #[serde(alias = "from_address", default)]
     pub from_email: String,
+    #[serde(default = "default_from_name")]
     pub from_name: String,
     pub reply_to: Option<String>,
-    #[serde(default = "default_use_tls")]
+    // gCore writes `smtp_tls`; accept it as an alias. gCore defaults it false for
+    // the localhost:25 plaintext relay (get_transport uses builder_dangerous).
+    #[serde(alias = "smtp_tls", default = "default_use_tls")]
     pub use_tls: bool,
 }
 
+fn default_smtp_host() -> String {
+    "localhost".to_string()
+}
+fn default_smtp_port() -> u16 {
+    25
+}
+fn default_from_name() -> String {
+    "Geodineum".to_string()
+}
 fn default_use_tls() -> bool {
     true
 }
@@ -79,34 +101,43 @@ impl EmailChannel {
         }
 
         // Create new transport
-        let creds = Credentials::new(smtp_config.smtp_user.clone(), smtp_config.smtp_pass.clone());
+        // Only set credentials if smtp_user is non-empty (localhost relay needs no auth)
+        let creds = if !smtp_config.smtp_user.is_empty() {
+            Some(Credentials::new(smtp_config.smtp_user.clone(), smtp_config.smtp_pass.clone()))
+        } else {
+            None
+        };
 
         let transport = if smtp_config.use_tls {
             if smtp_config.smtp_port == 465 {
                 // Implicit TLS (SMTPS)
-                AsyncSmtpTransport::<lettre::Tokio1Executor>::relay(&smtp_config.smtp_host)
-                    .map_err(|e| CommsError::Email(format!("Failed to create relay: {}", e)))?
-                    .credentials(creds)
-                    .port(smtp_config.smtp_port)
-                    .build()
+                let mut builder = AsyncSmtpTransport::<lettre::Tokio1Executor>::relay(&smtp_config.smtp_host)
+                    .map_err(|e| CommsError::Email(format!("Failed to create relay: {}", e)))?;
+                if let Some(c) = creds {
+                    builder = builder.credentials(c);
+                }
+                builder.port(smtp_config.smtp_port).build()
             } else {
                 // STARTTLS (port 587)
                 let tls_params = TlsParameters::new(smtp_config.smtp_host.clone())
                     .map_err(|e| CommsError::Email(format!("Failed to create TLS params: {}", e)))?;
 
-                AsyncSmtpTransport::<lettre::Tokio1Executor>::relay(&smtp_config.smtp_host)
-                    .map_err(|e| CommsError::Email(format!("Failed to create relay: {}", e)))?
-                    .credentials(creds)
-                    .port(smtp_config.smtp_port)
+                let mut builder = AsyncSmtpTransport::<lettre::Tokio1Executor>::relay(&smtp_config.smtp_host)
+                    .map_err(|e| CommsError::Email(format!("Failed to create relay: {}", e)))?;
+                if let Some(c) = creds {
+                    builder = builder.credentials(c);
+                }
+                builder.port(smtp_config.smtp_port)
                     .tls(Tls::Required(tls_params))
                     .build()
             }
         } else {
-            // No TLS (not recommended)
-            AsyncSmtpTransport::<lettre::Tokio1Executor>::builder_dangerous(&smtp_config.smtp_host)
-                .credentials(creds)
-                .port(smtp_config.smtp_port)
-                .build()
+            // No TLS — common for localhost relay (Postfix on port 25)
+            let mut builder = AsyncSmtpTransport::<lettre::Tokio1Executor>::builder_dangerous(&smtp_config.smtp_host);
+            if let Some(c) = creds {
+                builder = builder.credentials(c);
+            }
+            builder.port(smtp_config.smtp_port).build()
         };
 
         Ok(transport)
@@ -130,7 +161,7 @@ impl EmailChannel {
         let subject = content
             .subject
             .as_deref()
-            .unwrap_or("Notification from GSD");
+            .unwrap_or("Notification from gNode");
 
         let mut builder = Message::builder()
             .from(from)

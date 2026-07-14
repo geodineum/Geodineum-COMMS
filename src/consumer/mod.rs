@@ -1,4 +1,4 @@
-//! Stream consumer module for reading from GSD comms streams
+//! Stream consumer module for reading from gNode comms streams
 
 mod stream_reader;
 mod site_discovery;

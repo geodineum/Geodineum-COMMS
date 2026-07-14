@@ -1,9 +1,8 @@
 //! Template renderer using Tera
 
 use parking_lot::RwLock;
-use std::path::Path;
 use tera::{Context, Tera};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::channels::RenderedContent;
 use crate::error::{CommsError, Result};

@@ -48,6 +48,19 @@ impl SpamFilter {
         }
     }
 
+    /// Build from the daemon-level YAML config: the curated built-in
+    /// blocklists EXTENDED by the operator-configured entries (additive by
+    /// design — configuration can only strengthen filtering, never weaken
+    /// the shipped baseline).
+    pub fn with_extra_blocklists(keywords: &[String], ips: &[String]) -> Self {
+        let mut filter = Self::default();
+        filter
+            .keywords_blocklist
+            .extend(keywords.iter().map(|s| s.to_lowercase()));
+        filter.ip_blocklist.extend(ips.iter().cloned());
+        filter
+    }
+
     pub fn from_settings(settings: &FilterSettings) -> Self {
         Self {
             keywords_blocklist: settings

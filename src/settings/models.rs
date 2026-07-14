@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::channels::{ChannelConfig, RateLimit, RecipientConfig};
+use crate::channels::{ChannelConfig, RateLimit};
 
 /// Complete site settings
 #[derive(Debug, Clone, Serialize, Deserialize)]

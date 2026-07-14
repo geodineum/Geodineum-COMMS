@@ -4,7 +4,6 @@ use parking_lot::RwLock;
 use redis::aio::MultiplexedConnection;
 use redis::AsyncCommands;
 use std::collections::HashMap;
-use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::error::{CommsError, Result};
@@ -26,7 +25,7 @@ impl SettingsStore {
 
     /// Get the ValKey key for site settings
     fn settings_key(site_id: &str) -> String {
-        format!("{}:comms:config", site_id)
+        format!("{{{}}}:comms:config", site_id)
     }
 
     /// Get settings for a site
@@ -111,15 +110,18 @@ impl SettingsStore {
     pub async fn list_sites(&self) -> Result<Vec<String>> {
         let mut conn = self.conn.clone();
 
-        let keys: Vec<String> = redis::cmd("KEYS")
-            .arg("*:comms:config")
-            .query_async(&mut conn)
-            .await
-            .map_err(CommsError::ValKey)?;
+        // an earlier hardening pass: SCAN cursor instead of blocking KEYS.
+        let keys = crate::valkey_scan::scan_keys(&mut conn, "*:comms:config").await?;
 
+        // Keys are brace-literal hash-tags ("{site}:comms:config");
+        // braces are key syntax, never part of the site_id. Legacy
+        // unbraced keys (pre-migration) strip to the same id.
         let sites: Vec<String> = keys
             .iter()
-            .filter_map(|k| k.strip_suffix(":comms:config").map(|s| s.to_string()))
+            .filter_map(|k| {
+                k.strip_suffix(":comms:config")
+                    .map(|s| s.trim_start_matches('{').trim_end_matches('}').to_string())
+            })
             .collect();
 
         Ok(sites)
