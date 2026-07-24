@@ -5,8 +5,17 @@ Wants=valkey-gnode.service gnode-daemon.service
 # These keys belong in [Unit] — modern systemd ignores them under
 # [Service] ("Unknown key name"), so the restart rate-limit would
 # never apply there. The window key is named StartLimitIntervalSec.
-StartLimitBurst=5
-StartLimitIntervalSec=60
+#
+# NO permanent give-up (StartLimitIntervalSec=0). A rate limit here means
+# a TRANSIENT boot-time condition kills notifications until a human
+# notices: on 2026-07-24 the daemon lost a chdir race at boot
+# (status=200/CHDIR), exhausted 5 retries in seconds, and stayed dead for
+# 20 h — Telegram and every email silently gone, while the on-disk state
+# it had failed on was correct minutes later. For a notification daemon,
+# "keep trying" always beats "die quietly"; RestartSec bounds the loop to
+# 4 attempts/min, and a genuinely broken COMMS is now visible as a red
+# heartbeat tile rather than as silence.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -35,8 +44,9 @@ ExecStart=/bin/bash -c 'exec /opt/geodineum/Geodineum-COMMS/target/release/geodi
     --log-level info \
     start'
 
-Restart=on-failure
-RestartSec=5
+# always, not on-failure: a clean-but-unintended exit must also come back.
+Restart=always
+RestartSec=15
 
 NoNewPrivileges=true
 ProtectSystem=strict
