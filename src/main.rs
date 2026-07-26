@@ -377,11 +377,16 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
         }
     }
 
-    // Inference timeout from env (matches telegram-inference-bridge's INFERENCE_TIMEOUT, default 3000s)
+    // Inference timeout from env (INFERENCE_TIMEOUT). Default 7200s (2h): the
+    // local 35B (aurelius) generates a long reply at ~1 tok/s, so a full
+    // max_tokens response is a 40-60 min generation. The old 3000s (50 min)
+    // default abandoned replies that were still cooking (2026-07-26) — the
+    // operator would rather wait than lose the answer. Raise the env var if a
+    // pipeline can legitimately run longer.
     let inference_timeout: u64 = std::env::var("INFERENCE_TIMEOUT")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(3000);
+        .unwrap_or(7200);
 
     // Inbound stream consumer — reads from {site_id}:gnode:comms:inbound:{env}
     // (brace-literal hash-tag form for cluster-mode co-location).
