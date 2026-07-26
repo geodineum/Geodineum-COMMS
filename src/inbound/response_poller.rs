@@ -118,25 +118,28 @@ pub fn spawn_response_poller(mut conn: MultiplexedConnection, req: PollRequest) 
                         Ok(Some(response)) => {
                             let (raw, is_error, metrics) = extract_response(&response);
 
-                            // Build the front-end body: strip <think> (logged in
-                            // full below, just not shown), then HTML-escape.
-                            let body = if is_error {
-                                format!(
+                            // Chunk on the RAW (think-stripped) text first —
+                            // paragraph/line boundaries don't split inline
+                            // formatting — then render each chunk to HTML
+                            // independently, so no tag ever spans a boundary.
+                            let mut chunks: Vec<String> = if is_error {
+                                let body = format!(
                                     "Error from {}: {}",
                                     crate::inbound::html_escape_telegram(&req.pipeline),
                                     crate::inbound::html_escape_telegram(&raw)
-                                )
+                                );
+                                split_message(&body, CHUNK)
                             } else {
-                                crate::inbound::html_escape_telegram(&strip_thinking(&raw))
+                                split_message(&strip_thinking(&raw), CHUNK)
+                                    .iter()
+                                    .map(|c| crate::inbound::markdown_to_telegram_html(c))
+                                    .collect()
                             };
-
-                            // Chunk under Telegram's 4096 cap; footer only on the
-                            // last chunk so its <i> tag is never split.
-                            let mut chunks = split_message(&body, CHUNK);
                             if chunks.is_empty() {
                                 chunks.push(String::new());
                             }
                             if !is_error {
+                                // Footer only on the last chunk so its <i> tag is never split.
                                 let footer = format_metrics_footer(&req.pipeline, &metrics);
                                 if !footer.is_empty() {
                                     let tail = format!(
@@ -321,7 +324,9 @@ fn format_metrics_footer(pipeline: &str, metrics: &serde_json::Value) -> String 
 /// Telegram hard cap per message (UTF-16 code units). We chunk on char count,
 /// a safe under-approximation for BMP text, with headroom for the footer.
 const TG_LIMIT: usize = 4096;
-const CHUNK: usize = 3800;
+/// Split raw text at this size; markdown->HTML rendering then expands each
+/// chunk with tags, so leave headroom under the 4096 cap.
+const CHUNK: usize = 3500;
 
 /// Derive the site prefix (e.g. "{geodine}") from a unified stream key like
 /// "{geodine}:gnode:unified:production", for building the response-log key.
