@@ -31,7 +31,18 @@ WorkingDirectory=/opt/geodineum/Geodineum-COMMS
 Environment="RUST_LOG=geodineum_comms=info"
 
 # Load component-specific secrets (TELEGRAM_BOT_TOKEN, COMMS_ADMIN_IDS, etc.)
-# File is created by the operator — not in the repo. Missing file is non-fatal.
+# File is created by the operator — not in the repo. Missing file is non-fatal:
+# a deployment that sends email but not Telegram legitimately has none.
+#
+# The `-` keeps ABSENT non-fatal. It also used to keep UNREADABLE silent, which
+# is what cost 20 hours on 2026-07-24: the file existed, a permission sweep had
+# grouped it away from this service's user, systemd skipped it without a word,
+# and the daemon came up healthy with no token. The preflight below runs as
+# THIS unit's User= and refuses to start on exists-but-unreadable, so that
+# case is now loud and repeated (Restart=always) instead of silent and once.
+# Guarded so a host that has not yet received the helper still starts: a
+# preflight that cannot run must not become the new silent outage.
+ExecStartPre=/bin/bash -c 'if [ -x /usr/local/lib/geodineum/assert-env-readable.sh ]; then exec /usr/local/lib/geodineum/assert-env-readable.sh /etc/geodineum/components/geodineum-comms/geodineum-comms.env; else echo "env-preflight: helper not installed at /usr/local/lib/geodineum — env readability UNVERIFIED" >&2; fi'
 EnvironmentFile=-/etc/geodineum/components/geodineum-comms/geodineum-comms.env
 
 # No ExecStartPre chmod here — it could never work under
