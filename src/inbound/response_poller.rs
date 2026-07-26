@@ -116,18 +116,66 @@ pub fn spawn_response_poller(mut conn: MultiplexedConnection, req: PollRequest) 
                 _ = tokio::time::sleep(poll_interval) => {
                     match poll_response(&mut conn, &req.unified_stream, &req.request_id).await {
                         Ok(Some(response)) => {
-                            // Got response — edit the processing message
-                            let text = format_response(&response, &req.pipeline);
-                            let text_len = text.len();
+                            let (raw, is_error, metrics) = extract_response(&response);
+
+                            // Build the front-end body: strip <think> (logged in
+                            // full below, just not shown), then HTML-escape.
+                            let body = if is_error {
+                                format!(
+                                    "Error from {}: {}",
+                                    crate::inbound::html_escape_telegram(&req.pipeline),
+                                    crate::inbound::html_escape_telegram(&raw)
+                                )
+                            } else {
+                                crate::inbound::html_escape_telegram(&strip_thinking(&raw))
+                            };
+
+                            // Chunk under Telegram's 4096 cap; footer only on the
+                            // last chunk so its <i> tag is never split.
+                            let mut chunks = split_message(&body, CHUNK);
+                            if chunks.is_empty() {
+                                chunks.push(String::new());
+                            }
+                            if !is_error {
+                                let footer = format_metrics_footer(&req.pipeline, &metrics);
+                                if !footer.is_empty() {
+                                    let tail = format!(
+                                        "\n\n<i>{}</i>",
+                                        crate::inbound::html_escape_telegram(&footer)
+                                    );
+                                    let last = chunks.last_mut().unwrap();
+                                    if last.chars().count() + tail.chars().count() <= TG_LIMIT {
+                                        last.push_str(&tail);
+                                    } else {
+                                        chunks.push(format!(
+                                            "<i>{}</i>",
+                                            crate::inbound::html_escape_telegram(&footer)
+                                        ));
+                                    }
+                                }
+                            }
+
                             info!(
                                 request_id = %req.request_id,
                                 chat_id = %req.chat_id,
-                                response_len = text_len,
+                                response_len = raw.chars().count(),
+                                chunks = chunks.len(),
                                 "Response received, delivering to Telegram"
                             );
-                            let delivered = edit_message(
-                                &client, &api_base, &req.chat_id, req.processing_msg_id, &text,
-                            ).await;
+                            let delivered = deliver_chunks(
+                                &client, &api_base, &req.chat_id, req.processing_msg_id, &chunks,
+                            )
+                            .await;
+
+                            // Durable fallback log — the FULL raw text (incl any
+                            // <think> trace), so a reply is never lost even if
+                            // Telegram delivery fails.
+                            log_response(
+                                &mut conn, &req.unified_stream, &req.request_id,
+                                &req.chat_id, &req.pipeline, &raw, delivered,
+                            )
+                            .await;
+
                             if delivered {
                                 info!(
                                     request_id = %req.request_id,
@@ -138,7 +186,8 @@ pub fn spawn_response_poller(mut conn: MultiplexedConnection, req: PollRequest) 
                                 warn!(
                                     request_id = %req.request_id,
                                     chat_id = %req.chat_id,
-                                    "Response generated but Telegram delivery FAILED (both edit and send fallback)"
+                                    "Telegram delivery FAILED — full response preserved in {}:comms:responses",
+                                    site_prefix(&req.unified_stream)
                                 );
                             }
                             return;
@@ -161,11 +210,11 @@ pub fn spawn_response_poller(mut conn: MultiplexedConnection, req: PollRequest) 
                             timeout_secs = req.timeout_secs,
                             "Inference response timeout"
                         );
-                        let _ = edit_message(
+                        let _ = send_chunk(
                             &client,
                             &api_base,
                             &req.chat_id,
-                            req.processing_msg_id,
+                            Some(req.processing_msg_id),
                             "Inference timed out. The pipeline may be warming up — try again in a moment.",
                         ).await;
                         return;
@@ -207,47 +256,30 @@ async fn poll_response(
     Ok(None)
 }
 
-/// Format a inference response for Telegram delivery
-fn format_response(fields: &HashMap<String, String>, pipeline: &str) -> String {
+/// Extract the RAW model text (with any reasoning trace intact — the durable
+/// log keeps the complete copy), an is_error flag, and the metrics JSON. All
+/// front-end shaping (think-strip, HTML-escape, footer, chunking) happens in
+/// the poller so the logged text is never lossy.
+fn extract_response(fields: &HashMap<String, String>) -> (String, bool, serde_json::Value) {
     let status = fields.get("status").map(|s| s.as_str()).unwrap_or("unknown");
-
     if status != "ok" {
         let error = fields
             .get("error")
             .cloned()
             .unwrap_or_else(|| "Unknown error".to_string());
-        // an earlier hardening pass: `error` is AI/backend-generated; escape before HTML parse_mode.
-        return format!(
-            "Error from {}: {}",
-            crate::inbound::html_escape_telegram(pipeline),
-            crate::inbound::html_escape_telegram(&error)
-        );
+        return (error, true, serde_json::Value::Null);
     }
 
-    // Parse result JSON (contains text, metrics, session_id)
     let result_raw = fields.get("result").cloned().unwrap_or_default();
     let result: serde_json::Value =
         serde_json::from_str(&result_raw).unwrap_or(serde_json::Value::Null);
-
     let text = result
         .get("text")
         .and_then(|v| v.as_str())
-        .unwrap_or(&result_raw);
-
-    // Build metrics footer (matches the standard telegram footer format)
-    let metrics = result.get("metrics").cloned().unwrap_or_default();
-    let footer = format_metrics_footer(pipeline, &metrics);
-
-    // an earlier hardening pass: `text` is AI-generated; escape before embedding into the
-    // HTML-parsed footer wrapper. `footer` is generated by us from typed
-    // numeric fields (pipeline name + tokens/ms metrics) so it's safe —
-    // but pipeline name itself comes from user input, so escape it too.
-    let safe_text = crate::inbound::html_escape_telegram(text);
-    if footer.is_empty() {
-        safe_text
-    } else {
-        format!("{}\n\n<i>{}</i>", safe_text, crate::inbound::html_escape_telegram(&footer))
-    }
+        .unwrap_or(&result_raw)
+        .to_string();
+    let metrics = result.get("metrics").cloned().unwrap_or(serde_json::Value::Null);
+    (text, false, metrics)
 }
 
 /// Format metrics footer (ported from telegram-inference-bridge's format_metrics_footer)
@@ -286,6 +318,200 @@ fn format_metrics_footer(pipeline: &str, metrics: &serde_json::Value) -> String 
     parts.join(" | ")
 }
 
+/// Telegram hard cap per message (UTF-16 code units). We chunk on char count,
+/// a safe under-approximation for BMP text, with headroom for the footer.
+const TG_LIMIT: usize = 4096;
+const CHUNK: usize = 3800;
+
+/// Derive the site prefix (e.g. "{geodine}") from a unified stream key like
+/// "{geodine}:gnode:unified:production", for building the response-log key.
+fn site_prefix(unified_stream: &str) -> &str {
+    unified_stream.split(":gnode:").next().unwrap_or("{geodine}")
+}
+
+/// Strip <think>/<thinking> reasoning blocks from model output for front-end
+/// delivery. The FULL text (with the trace) is still logged durably by
+/// log_response, so nothing is lost — the trace is just not shown. Handles
+/// multiple blocks and an unclosed block (a trace truncated at max_tokens).
+fn strip_thinking(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    loop {
+        let open = ["<think>", "<thinking>"]
+            .iter()
+            .filter_map(|t| rest.find(t).map(|i| (i, *t)))
+            .min_by_key(|(i, _)| *i);
+        match open {
+            Some((start, tag)) => {
+                out.push_str(&rest[..start]);
+                let after = &rest[start + tag.len()..];
+                let close = if tag == "<think>" { "</think>" } else { "</thinking>" };
+                match after.find(close) {
+                    Some(end) => rest = &after[end + close.len()..],
+                    None => break, // unclosed trace — drop the remainder
+                }
+            }
+            None => {
+                out.push_str(rest);
+                break;
+            }
+        }
+    }
+    out.trim().to_string()
+}
+
+/// Split text into <= max-char chunks on the softest available boundary
+/// (paragraph, then line, then hard char split). Never drops content.
+fn split_message(text: &str, max: usize) -> Vec<String> {
+    if text.chars().count() <= max {
+        return vec![text.to_string()];
+    }
+    let mut chunks: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let clen = |s: &str| s.chars().count();
+    let flush = |cur: &mut String, chunks: &mut Vec<String>| {
+        if !cur.is_empty() {
+            chunks.push(std::mem::take(cur));
+        }
+    };
+    for para in text.split_inclusive("\n\n") {
+        if clen(&cur) + clen(para) <= max {
+            cur.push_str(para);
+        } else if clen(para) <= max {
+            flush(&mut cur, &mut chunks);
+            cur.push_str(para);
+        } else {
+            flush(&mut cur, &mut chunks);
+            for line in para.split_inclusive('\n') {
+                if clen(&cur) + clen(line) <= max {
+                    cur.push_str(line);
+                } else if clen(line) <= max {
+                    flush(&mut cur, &mut chunks);
+                    cur.push_str(line);
+                } else {
+                    flush(&mut cur, &mut chunks);
+                    for ch in line.chars() {
+                        if clen(&cur) >= max {
+                            flush(&mut cur, &mut chunks);
+                        }
+                        cur.push(ch);
+                    }
+                }
+            }
+        }
+    }
+    flush(&mut cur, &mut chunks);
+    chunks
+}
+
+/// Durably record a generated response to a ValKey list so it is NEVER lost —
+/// even when Telegram delivery fails. Logs the full (unstripped) text plus
+/// delivery outcome as a JSON envelope; LTRIM caps the list. Best-effort: a
+/// logging failure must never block delivery.
+async fn log_response(
+    conn: &mut MultiplexedConnection,
+    unified_stream: &str,
+    request_id: &str,
+    chat_id: &str,
+    pipeline: &str,
+    full_text: &str,
+    delivered: bool,
+) {
+    let key = format!("{}:comms:responses", site_prefix(unified_stream));
+    let envelope = serde_json::json!({
+        "request_id": request_id,   // embeds a ms timestamp
+        "chat_id": chat_id,
+        "pipeline": pipeline,
+        "delivered": delivered,
+        "text": full_text,
+    })
+    .to_string();
+    let res: redis::RedisResult<()> = redis::pipe()
+        .cmd("LPUSH").arg(&key).arg(&envelope).ignore()
+        .cmd("LTRIM").arg(&key).arg(0).arg(999).ignore()
+        .query_async(conn)
+        .await;
+    if let Err(e) = res {
+        warn!(request_id = %request_id, error = %e, "Failed to durably log response");
+    }
+}
+
+/// Deliver an already-chunked, HTML-formatted reply. The first chunk edits the
+/// "Processing…" placeholder; subsequent chunks are sent as new messages. Each
+/// chunk independently falls back HTML -> plain so bad markup never loses text.
+/// Returns true only if every chunk was delivered.
+async fn deliver_chunks(
+    client: &Client,
+    api_base: &str,
+    chat_id: &str,
+    first_msg_id: i64,
+    chunks: &[String],
+) -> bool {
+    let mut all = true;
+    for (i, chunk) in chunks.iter().enumerate() {
+        let ok = if i == 0 {
+            send_chunk(client, api_base, chat_id, Some(first_msg_id), chunk).await
+        } else {
+            send_chunk(client, api_base, chat_id, None, chunk).await
+        };
+        all &= ok;
+    }
+    all
+}
+
+/// Send or edit one chunk: HTML parse_mode first, then plain text, then (when
+/// editing) a fresh send as last resort. Returns true on any success.
+async fn send_chunk(
+    client: &Client,
+    api_base: &str,
+    chat_id: &str,
+    message_id: Option<i64>,
+    text: &str,
+) -> bool {
+    // Attempt 1 + 2: edit (if we have a message_id) with HTML then plain.
+    if let Some(mid) = message_id {
+        let edit_url = format!("{}/editMessageText", api_base);
+        for (html, label) in [(true, "HTML"), (false, "plain")] {
+            let mut payload = serde_json::json!({
+                "chat_id": chat_id, "message_id": mid, "text": text,
+            });
+            if html {
+                payload["parse_mode"] = serde_json::json!("HTML");
+            }
+            if let Ok(resp) = client.post(&edit_url).json(&payload).send().await {
+                if resp.status().is_success() {
+                    return true;
+                }
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                warn!(chat_id = %chat_id, status = %status, body = %body,
+                    "editMessageText {label} failed");
+            }
+        }
+    }
+
+    // Send a new message: HTML then plain.
+    let send_url = format!("{}/sendMessage", api_base);
+    for (html, label) in [(true, "HTML"), (false, "plain")] {
+        let mut payload = serde_json::json!({ "chat_id": chat_id, "text": text });
+        if html {
+            payload["parse_mode"] = serde_json::json!("HTML");
+        }
+        match client.post(&send_url).json(&payload).send().await {
+            Ok(resp) if resp.status().is_success() => return true,
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                warn!(chat_id = %chat_id, status = %status, body = %body,
+                    "sendMessage {label} failed");
+            }
+            Err(e) => warn!(chat_id = %chat_id,
+                error = %crate::error::scrub_reqwest_url(&e), "sendMessage {label} errored"),
+        }
+    }
+    false
+}
+
 /// Send typing indicator
 async fn send_typing(client: &Client, api_base: &str, chat_id: &str) {
     let url = format!("{}/sendChatAction", api_base);
@@ -294,90 +520,6 @@ async fn send_typing(client: &Client, api_base: &str, chat_id: &str) {
         "action": "typing",
     });
     let _ = client.post(&url).json(&payload).send().await;
-}
-
-/// Edit an existing Telegram message. Returns true if delivery succeeded
-/// (either edit or fallback send). The HTML parse_mode is used first; on
-/// Telegram rejection (e.g., invalid markup in AI output), retries with
-/// plain text so the user still receives the reply.
-async fn edit_message(
-    client: &Client,
-    api_base: &str,
-    chat_id: &str,
-    message_id: i64,
-    text: &str,
-) -> bool {
-    let url = format!("{}/editMessageText", api_base);
-    let payload = serde_json::json!({
-        "chat_id": chat_id,
-        "message_id": message_id,
-        "text": text,
-        "parse_mode": "HTML",
-    });
-
-    // Attempt 1: edit with HTML
-    if let Ok(resp) = client.post(&url).json(&payload).send().await {
-        if resp.status().is_success() {
-            return true;
-        }
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        warn!(
-            chat_id = %chat_id,
-            status = %status,
-            body = %body,
-            "editMessageText HTML failed, retrying plain"
-        );
-    }
-
-    // Attempt 2: edit with no parse_mode (plain text) — AI output may contain bad HTML
-    let plain_payload = serde_json::json!({
-        "chat_id": chat_id,
-        "message_id": message_id,
-        "text": text,
-    });
-    if let Ok(resp) = client.post(&url).json(&plain_payload).send().await {
-        if resp.status().is_success() {
-            return true;
-        }
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        warn!(
-            chat_id = %chat_id,
-            status = %status,
-            body = %body,
-            "editMessageText plain also failed, falling back to sendMessage"
-        );
-    }
-
-    // Attempt 3: send a new message (plain) — last resort so user at least gets the reply
-    let send_url = format!("{}/sendMessage", api_base);
-    let send_payload = serde_json::json!({
-        "chat_id": chat_id,
-        "text": text,
-    });
-    match client.post(&send_url).json(&send_payload).send().await {
-        Ok(resp) if resp.status().is_success() => true,
-        Ok(resp) => {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            warn!(
-                chat_id = %chat_id,
-                status = %status,
-                body = %body,
-                "sendMessage fallback also failed — reply LOST"
-            );
-            false
-        }
-        Err(e) => {
-            warn!(
-                chat_id = %chat_id,
-                error = %crate::error::scrub_reqwest_url(&e),
-                "sendMessage fallback errored — reply LOST"
-            );
-            false
-        }
-    }
 }
 
 /// Parse a raw XREVRANGE / XRANGE response into [(entry_id, fields)].
