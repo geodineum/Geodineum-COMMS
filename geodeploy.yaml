@@ -13,8 +13,11 @@ triggers:
   # The unit file lived in this repo but nothing deployed it: a change to
   # config/*.service sat in git while /etc/systemd/system kept the old copy,
   # so unit fixes only landed when an operator remembered to copy them by hand.
+  # `service-install`, hyphenated: that is the action name the dispatcher
+  # registers. The underscore form is the internal FUNCTION name and is
+  # rejected with "WARN unknown action".
   - match: "config/*.service"
-    actions: [service_install, restart]
+    actions: [service-install, restart]
 
 build:
   type: cargo
