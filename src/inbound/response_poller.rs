@@ -422,7 +422,9 @@ async fn log_response(
     full_text: &str,
     delivered: bool,
 ) {
-    let key = format!("{}:comms:responses", site_prefix(unified_stream));
+    // Own-namespace only: COMMS is granted {site}:gnode:comms:* (its delivery
+    // channel), NOT the bare {site}:* tree — writing there is denied NOPERM.
+    let key = format!("{}:gnode:comms:responses", site_prefix(unified_stream));
     let envelope = serde_json::json!({
         "request_id": request_id,   // embeds a ms timestamp
         "chat_id": chat_id,
