@@ -432,6 +432,41 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
     // dashboard (see writeback_status). Cheap clone of the multiplexed pipe.
     let mut status_conn = conn.clone();
 
+    // Receipt producer identity (T-E). COMMS signs with its OWN key: `signer`
+    // identifies the producer, and it runs as geodineum-comms so it cannot read
+    // the daemon's key (0600 gnode:gnode) in any case. Generated 0600 on first
+    // use; the pubkey is published so verifiers can resolve the fingerprint.
+    // Failure here is non-fatal and LOUD: no context means no receipts, which
+    // must be visible rather than inferred from an empty stream.
+    {
+        let key_path = geodineum_comms::receipt::default_signer_path();
+        match geodineum_comms::receipt::load_or_generate_signer(&key_path) {
+            Ok(signer) => {
+                let ns = std::env::var("GNODE_TOPOLOGY_NAMESPACE")
+                    .unwrap_or_else(|_| "geodineum".to_string());
+                let mut pk_conn = conn.clone();
+                match geodineum_comms::receipt::publish_pubkey(&mut pk_conn, &ns, &signer).await {
+                    Ok(()) => info!(
+                        signer = %signer.signer_id(), key = %key_path.display(),
+                        "receipt signer ready; pubkey published"
+                    ),
+                    Err(e) => warn!(
+                        error = %e,
+                        "receipt pubkey publish FAILED — receipts will be written but \
+                         nothing can verify them until the key is in the registry"
+                    ),
+                }
+                geodineum_comms::receipt::init_receipt_context(
+                    signer, "comms".to_string(), cli.environment.clone(),
+                );
+            }
+            Err(e) => warn!(
+                error = %e, key = %key_path.display(),
+                "receipt signer unavailable — COMMS will emit NO receipts this run"
+            ),
+        }
+    }
+
     // Liveness heartbeat for the operator dashboard (see write_heartbeat).
     // Write once up front so COMMS shows up immediately, then refresh on a
     // ~60s cadence from the loop tail.
@@ -1557,6 +1592,37 @@ async fn writeback_status(
         .await;
     if let Err(e) = res {
         debug!(site_id = %site_id, stream_id = %stream_id, error = %e, "comms status writeback failed (non-fatal)");
+    }
+
+    // T-E: the durable half. The hash above is a mutable, unsigned projection
+    // the dashboard overlays; this is the tamper-evident record observers
+    // consume. ADDITIVE for now — the hash stays until the dashboard read-path
+    // moves, per the contract's emit-then-remove discipline, which is the same
+    // rule that gated T-D on the daemon side.
+    //
+    // Best-effort like the writeback itself: SQLite remains the source of
+    // truth, and a receipt failure must never block or fail a dispatch.
+    if let Some(ctx) = geodineum_comms::receipt::receipt_context() {
+        let now = geodineum_comms::receipt::now_ms();
+        if let Some(receipt) = geodineum_comms::receipt::signed_delivery_receipt(
+            stream_id,
+            "comms.deliver",
+            status,
+            error.map(String::from),
+            site_id,
+            &key,
+            status,
+            now,
+        ) {
+            if let Err(e) = geodineum_comms::receipt::emit_receipt(
+                conn, &receipt, site_id, &ctx.environment, now,
+            )
+            .await
+            {
+                debug!(site_id = %site_id, stream_id = %stream_id, error = %e,
+                       "comms receipt emit failed (non-fatal)");
+            }
+        }
     }
 }
 

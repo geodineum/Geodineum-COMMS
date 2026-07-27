@@ -1,0 +1,44 @@
+{
+  "_comment": [
+    "Golden vectors for the signed receipt wire format. EVERY producer and",
+    "verifier must reproduce these exactly, in whatever language it is written.",
+    "This file is the shared safety mechanism named in the receipt contract:",
+    "the ecosystem deliberately runs several INDEPENDENT implementations",
+    "(gNode daemon in Rust, Geodineum-COMMS in Rust, and the polyglot clients",
+    "of SB-8.88 in Python/C/TypeScript), so nothing but a common set of test",
+    "vectors keeps them from drifting apart. A drift is invisible in normal",
+    "operation and then presents as a signature failure, which reads as",
+    "tampering rather than as a regression.",
+    "Ed25519 is deterministic (RFC 8032): a fixed seed over fixed input has",
+    "exactly one correct signature, so these values are stable forever.",
+    "Copies live in gNode, Geodineum-COMMS and Geodineum-pro/CONTRACTS and",
+    "must stay byte-identical."
+  ],
+  "schema_version": 1,
+  "alg": "ed25519",
+  "signer_key": {
+    "seed_hex": "0707070707070707070707070707070707070707070707070707070707070707",
+    "public_hex": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+    "signer_id": "fe812c12f3ab4ce6",
+    "signer_id_derivation": "hex(sha256(public_key_bytes)[..8])"
+  },
+  "receipt": {
+    "v": 1,
+    "alg": "ed25519",
+    "correlation_id": "req-1",
+    "command": "cmd",
+    "status": "ok",
+    "error": null,
+    "site": "site",
+    "node": "node",
+    "ts_ms": 42,
+    "body_ref": "ref",
+    "body": "body",
+    "body_hash": "230d8358dc8e8890b4c58deeb62912ee2f20357ae92a5cc861b98e68fe31acb5",
+    "parent_id": null,
+    "flow_id": null
+  },
+  "canonical_bytes_utf8": "v=1\nalg=ed25519\ncid=req-1\ncmd=cmd\nst=ok\ne=\nss=site\nsn=node\nts=42\nbref=ref\nbh=230d8358dc8e8890b4c58deeb62912ee2f20357ae92a5cc861b98e68fe31acb5\npid=\nfid=\n",
+  "canonical_bytes_note": "Field order is part of the signature. Absent optionals (error/parent_id/flow_id) render as the EMPTY STRING, not as an omitted line \u2014 a verifier that skips the line computes different bytes and rejects exactly the healthy receipts.",
+  "signature_hex": "c2d062f2cf0cb4525dbf5da86629cf207767bba3164097c8454efbc8d728571507c3d2aeb328c142ccd3da1b9c631f2e246ac3cc5559a9a59499cf877c61f40c"
+}

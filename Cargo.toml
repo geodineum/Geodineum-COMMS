@@ -31,6 +31,12 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 r2d2_sqlite = "0.24"
 r2d2 = "0.8"
 
+# Signed receipts (T-E). COMMS is the first external producer on the receipt
+# stream and signs with its OWN key — `signer` identifies the producer, and it
+# cannot read the daemon's key (0600 gnode:gnode) in any case.
+ed25519-dalek = { version = "2" }
+sha2 = "0.10"
+
 # Email
 lettre = { version = "0.11", features = ["tokio1-native-tls", "builder", "pool"] }
 

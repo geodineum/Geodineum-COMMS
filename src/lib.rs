@@ -16,6 +16,7 @@ pub mod error;
 pub mod filters;
 pub mod inbound;
 pub mod persistence;
+pub mod receipt;
 pub mod retry;
 pub mod router;
 pub mod settings;
