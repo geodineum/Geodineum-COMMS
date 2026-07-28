@@ -234,8 +234,27 @@ pub fn load_or_generate_signer(path: &Path) -> io::Result<NodeSigner> {
     })
 }
 
+/// Where this producer's signing key lives.
+///
+/// /var/lib, NOT /etc/geodineum/components. Two reasons, and the first one is
+/// not theoretical — the original /etc path failed on the very first live start:
+///
+///   WARN receipt signer unavailable — COMMS will emit NO receipts this run
+///        error=Read-only file system (os error 30)
+///
+/// The unit runs ProtectSystem=strict and its ReadWritePaths does not include
+/// /etc (the daemon's unit does grant itself /etc/geodineum, which is why the
+/// same self-generating code works there — an asymmetry that is easy to miss
+/// when copying a pattern between two services).
+///
+/// The fix is not to widen the sandbox. A private signing key is service STATE,
+/// not operator CONFIG: /var/lib/geodineum-comms is owned by this service, is
+/// already in ReadWritePaths, and keeps the component's config directory
+/// non-writable by the component — which is the property the unit comments
+/// explicitly want ("root owns so the daemon can't rewrite its own
+/// credentials").
 pub fn default_signer_path() -> PathBuf {
-    PathBuf::from("/etc/geodineum/components/geodineum-comms/receipt_signing.key")
+    PathBuf::from("/var/lib/geodineum-comms/receipt_signing.key")
 }
 
 /// Registry of verifier keys: field = signer fingerprint, value = `alg:pubkey_hex`.
