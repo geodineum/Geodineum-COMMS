@@ -157,3 +157,73 @@ impl SiteSettings {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::channels::telegram::TelegramConfig;
+
+    /// The exact shape an operator writes to {site}:comms:config to stand up
+    /// an operator channel that can carry approval buttons. Asserted here
+    /// against the code that consumes it, because a config that fails to
+    /// deserialize takes the site's OTHER channels down with it —
+    /// get_settings returns Err for the whole site, not just the bad channel.
+    const OPERATOR_CHANNEL_CONFIG: &str = r#"{
+      "site_id": "geodine",
+      "enabled": true,
+      "channels": {
+        "email": {
+          "enabled": true,
+          "config": {},
+          "recipients": [{"email": "operator@example.test"}]
+        },
+        "telegram": {
+          "enabled": true,
+          "config": {
+            "bot_token": "0000000000:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "chat_id": "1234567890"
+          },
+          "recipients": [{"chat_id": "1234567890"}]
+        }
+      }
+    }"#;
+
+    #[test]
+    fn operator_channel_config_deserializes() {
+        let s: SiteSettings = serde_json::from_str(OPERATOR_CHANNEL_CONFIG).unwrap();
+        assert_eq!(s.site_id, "geodine");
+        assert!(s.enabled);
+        let tg = s.channels.telegram.expect("telegram channel missing");
+        assert!(tg.enabled);
+        assert_eq!(tg.recipients.len(), 1);
+        // The flattened address map is what bot.rs reads to pick a chat.
+        assert_eq!(tg.recipients[0].address.get("chat_id").map(String::as_str), Some("1234567890"));
+        // Default min_priority must admit a grant notification (priority 2).
+        assert!(tg.recipients[0].should_receive("alert", 2));
+    }
+
+    #[test]
+    fn operator_channel_yields_a_usable_telegram_config() {
+        let s: SiteSettings = serde_json::from_str(OPERATOR_CHANNEL_CONFIG).unwrap();
+        let cfg = TelegramConfig::from_channel_config(&s.channels.telegram.unwrap())
+            .expect("TelegramConfig extraction failed — bot_token/chat_id shape is wrong");
+        assert!(!cfg.bot_token.is_empty());
+        assert_eq!(cfg.chat_id, "1234567890");
+        // Grant bodies contain -, ., (, ) — escape_markdown_v2 handles them,
+        // so the default parse mode is safe to inherit.
+        assert_eq!(cfg.parse_mode, "MarkdownV2");
+    }
+
+    /// The custom-channel flatten means an unrecognised key under `channels`
+    /// is parsed AS a ChannelConfig. A typo like "telegrm" therefore does not
+    /// error — it silently becomes a custom channel nothing dispatches to.
+    #[test]
+    fn a_misspelled_channel_is_silently_accepted() {
+        let s: SiteSettings = serde_json::from_str(
+            r#"{"site_id":"x","channels":{"telegrm":{"enabled":true,"config":{},"recipients":[]}}}"#,
+        )
+        .unwrap();
+        assert!(s.channels.telegram.is_none());
+        assert!(s.channels.custom.contains_key("telegrm"));
+    }
+}
