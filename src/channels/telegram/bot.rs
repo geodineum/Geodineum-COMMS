@@ -158,14 +158,44 @@ impl TelegramChannel {
         parse_mode: &str,
         disable_notification: bool,
     ) -> Result<i64> {
+        self.send_message_with_markup(
+            bot_token, chat_id, text, parse_mode, disable_notification, None,
+        )
+        .await
+    }
+
+    /// Send with an optional inline keyboard.
+    ///
+    /// Buttons make a notification ACTIONABLE, which is the difference between
+    /// an approval loop you can answer from a phone and one that auto-denies
+    /// after 72 hours because nobody was at a terminal.
+    ///
+    /// Deliberately NOT a link with a token in it. A capability URL in a
+    /// message is a bearer credential in a medium that forwards, indexes and
+    /// backs itself up — and link previews in mail and chat clients FETCH urls
+    /// to render them, so a state-changing GET can fire without anyone
+    /// clicking. A callback button carries no capability: Telegram reports the
+    /// pressing user's id, and the receiver checks it against an allowlist.
+    async fn send_message_with_markup(
+        &self,
+        bot_token: &str,
+        chat_id: &str,
+        text: &str,
+        parse_mode: &str,
+        disable_notification: bool,
+        reply_markup: Option<&serde_json::Value>,
+    ) -> Result<i64> {
         let url = format!("https://api.telegram.org/bot{}/sendMessage", bot_token);
 
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "chat_id": chat_id,
             "text": text,
             "parse_mode": parse_mode,
             "disable_notification": disable_notification,
         });
+        if let Some(markup) = reply_markup {
+            payload["reply_markup"] = markup.clone();
+        }
 
         let response = self
             .client
