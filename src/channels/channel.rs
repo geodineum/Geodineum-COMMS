@@ -102,12 +102,27 @@ where
 /// Dispatch status information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DispatchInfo {
+    #[serde(default)]
     pub channels: Vec<String>,
+    /// Defaulted because it is COMMS' own bookkeeping, not something a
+    /// producer knows to supply. Without a default, `{"channels":["email"]}`
+    /// fails to deserialize and parse_field_safely turns that into None — the
+    /// whole dispatch block is discarded and the channel selection it asked
+    /// for is silently ignored while delivery still appears to work.
+    #[serde(default)]
     pub status: DispatchStatus,
     #[serde(default)]
     pub attempts: u32,
+    #[serde(default)]
     pub last_attempt: Option<String>,
+    #[serde(default)]
     pub next_retry: Option<String>,
+    /// Optional channel-native interaction affordance, currently a Telegram
+    /// inline keyboard. Passed through verbatim to the channel that
+    /// understands it and ignored by the ones that do not, so a notification
+    /// can be ANSWERED where the medium supports answering.
+    #[serde(default)]
+    pub reply_markup: Option<serde_json::Value>,
 }
 
 /// Dispatch status enum
@@ -282,5 +297,44 @@ impl RenderedContent {
     pub fn with_html(mut self, html: impl Into<String>) -> Self {
         self.body_html = Some(html.into());
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A producer writes what it knows: which channels, and the buttons it
+    // wants offered. It has no idea what `status` or `attempts` mean. Before
+    // these fields were defaulted, this exact JSON failed to deserialize and
+    // parse_field_safely turned the failure into None — the requested channel
+    // list was dropped and delivery still worked, so nothing looked wrong.
+    #[test]
+    fn producer_minimal_dispatch_deserializes() {
+        let d: DispatchInfo =
+            serde_json::from_str(r#"{"channels":["email","telegram"]}"#).unwrap();
+        assert_eq!(d.channels, vec!["email", "telegram"]);
+        assert_eq!(d.status, DispatchStatus::Pending);
+        assert!(d.reply_markup.is_none());
+    }
+
+    #[test]
+    fn reply_markup_survives_deserialization() {
+        let d: DispatchInfo = serde_json::from_str(
+            r#"{"channels":["telegram"],"reply_markup":{"inline_keyboard":[[
+                 {"text":"Approve","callback_data":"grant:approve:gr-1"}]]}}"#,
+        )
+        .unwrap();
+        let kb = d.reply_markup.expect("reply_markup dropped");
+        assert_eq!(
+            kb["inline_keyboard"][0][0]["callback_data"],
+            "grant:approve:gr-1"
+        );
+    }
+
+    #[test]
+    fn empty_dispatch_object_is_not_an_error() {
+        let d: DispatchInfo = serde_json::from_str("{}").unwrap();
+        assert!(d.channels.is_empty());
     }
 }

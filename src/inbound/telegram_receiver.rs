@@ -432,8 +432,21 @@ impl TelegramReceiver {
                     callback_message_id: callback_msg_id,
                 };
 
-                if let Err(e) = self.write_to_stream(&inbound).await {
-                    error!(error = %e, "Failed to write callback to stream");
+                let cb_id = inbound.callback_query_id.clone();
+                match self.write_to_stream(&inbound).await {
+                    Ok(()) => {
+                        // Telegram spins the button until answerCallbackQuery
+                        // arrives, so an unanswered press reads as a failure and
+                        // gets pressed again. Answered AFTER the write, so the
+                        // acknowledgement means recorded, not merely received.
+                        let _ = self.answer_callback_query(&cb_id, Some("Recorded")).await;
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Failed to write callback to stream");
+                        let _ = self
+                            .answer_callback_query(&cb_id, Some("Not recorded — press again"))
+                            .await;
+                    }
                 }
                 continue;
             }

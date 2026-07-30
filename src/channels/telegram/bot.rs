@@ -149,22 +149,8 @@ impl TelegramChannel {
         result
     }
 
-    /// Send message via Telegram Bot API
-    async fn send_message(
-        &self,
-        bot_token: &str,
-        chat_id: &str,
-        text: &str,
-        parse_mode: &str,
-        disable_notification: bool,
-    ) -> Result<i64> {
-        self.send_message_with_markup(
-            bot_token, chat_id, text, parse_mode, disable_notification, None,
-        )
-        .await
-    }
-
-    /// Send with an optional inline keyboard.
+    /// Send a message via the Telegram Bot API, with an optional inline
+    /// keyboard.
     ///
     /// Buttons make a notification ACTIONABLE, which is the difference between
     /// an approval loop you can answer from a phone and one that auto-denies
@@ -258,14 +244,22 @@ impl NotificationChannel for TelegramChannel {
             .render_content(message, Some(&message.message_type))
             .await?;
 
-        // Send message
+        // Send message, carrying an inline keyboard when the producer asked for
+        // one. This is the only path that turns a notification into a decision
+        // the operator can make from a phone.
+        let markup = message
+            .dispatch
+            .as_ref()
+            .and_then(|d| d.reply_markup.as_ref());
+
         let message_id = self
-            .send_message(
+            .send_message_with_markup(
                 &telegram_config.bot_token,
                 chat_id,
                 &content.body,
                 &telegram_config.parse_mode,
                 telegram_config.disable_notification,
+                markup,
             )
             .await?;
 
