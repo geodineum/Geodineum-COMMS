@@ -23,7 +23,7 @@ build:
   type: cargo
 
 dirty-tree:
-  strategy: stash
+  strategy: discard
 
 cli:
   commands:
