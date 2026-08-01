@@ -29,6 +29,8 @@ Notification daemon. gNode=Sun, ValKey=common backend. Stateless/state-aware: co
 - spam: `SpamFilter::with_extra_blocklists` YAML-additive over built-ins `spam.rs` wired `main.rs` (enabled:false default)
 - CLI enum: `config.rs` (start|stop*|status*|test|encrypt*|sites|messages|stats|message|retry|cleanup|db-stats; *=print-only stub `main.rs`)
 - entry: `main.rs`, main loop spawns StreamConsumer + RetryManager(XAUTOCLAIM + post-ACK re-dispatch) + TelegramReceiver + response_poller
+- dispatch field: producer-minimal (ALL fields defaulted; `{}` valid); `reply_markup` → telegram inline keyboard verbatim, other channels ignore. Buttons answered via answerCallbackQuery AFTER stream write (ack = recorded, not received).
+- liveness: SETEX `{ns}:gnode:heartbeat:{env}:comms:{node}` 120 (node = short hostname; CONTRACTS/heartbeat.md)
 
 ## ::ARCHITECTURE
 

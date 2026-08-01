@@ -166,7 +166,7 @@ objects).
 | `sender` | opt | JSON string | `{"name","email","phone","ip","user_agent"}` — all optional. |
 | `content` | rec | JSON string | `{"subject","body","attachments":{}}`. **Has a fallback**: if absent/unparseable, the daemon synthesizes content from flat `subject` / `body` (or `message`) fields (Tera templates are then skipped). (See §7.) |
 | `metadata` | opt | JSON string | Free-form object, e.g. `{"form_type","source_url","callback_stream","reply_options"}`. |
-| `dispatch` | opt | JSON string | `{"channels":["email"],"status":"pending","attempts":0}`. `channels` selects which channels to use; if omitted the site's routing rules / all enabled channels apply. `status` is not enum-validated on the wire. **Never send an empty `channels` array** — it falls through to all enabled channels and would dispatch. Use a sentinel channel (below) to record-without-sending. |
+| `dispatch` | opt | JSON string | Producer-minimal: every field is defaulted, so `{"channels":["email"]}` or even `{}` is valid — `status`/`attempts` are COMMS bookkeeping, never producer-supplied (a required `status` once made producer JSON fail deserialization and silently drop the whole block). `channels` overrides site routing when present and non-empty; **never send an empty `channels` array** (falls through to all enabled channels). `reply_markup` (optional JSON) passes through verbatim to Telegram as an inline keyboard and is ignored by other channels — how a notification becomes answerable from a phone. Sentinel channel (below) records without sending. |
 
 Channels: `email`, `telegram`, `sms`. Sentinel (record-only, no outbound send —
 message still lands on the stream and archives as skipped): `record`, `log`,
