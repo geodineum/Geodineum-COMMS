@@ -1628,8 +1628,14 @@ async fn writeback_status(
 
 /// Best-effort liveness heartbeat so the operator dashboard can show COMMS as
 /// up. SETEX with a 120s TTL, refreshed ~every 60s from the main loop; a dead
-/// daemon's key self-expires and the dashboard reads it as down. Keyed under
-/// {geodineum}:gnode:* so every service ACL already grants the write.
+/// daemon's key self-expires and the dashboard reads it as down.
+///
+/// The write requires `~*:gnode:heartbeat:*` in the geodineum_comms ACL,
+/// composed in the installer (acl_comms_patterns). That pattern was MISSING
+/// from the least-privilege composition for weeks and this comment claimed
+/// coverage anyway — every write failed NOPERM while the error hid at debug
+/// level below. An assertion in prose is not a grant; the errors below are
+/// warn! now so the next silent denial is not silent.
 async fn write_heartbeat(conn: &mut redis::aio::MultiplexedConnection, environment: &str) {
     let ns = std::env::var("GNODE_TOPOLOGY_NAMESPACE").unwrap_or_else(|_| "geodineum".to_string());
     // Node segment per CONTRACTS/heartbeat.md: without it, every node in a
@@ -1658,7 +1664,9 @@ async fn write_heartbeat(conn: &mut redis::aio::MultiplexedConnection, environme
         .query_async(conn)
         .await;
     if let Err(e) = res {
-        debug!(error = %e, "comms heartbeat failed (non-fatal)");
+        // warn, not debug: this exact failure ran invisibly for weeks at
+        // debug level while the dashboard showed COMMS down.
+        warn!(error = %e, "comms heartbeat write failed (non-fatal, dashboard shows down)");
     }
 }
 
