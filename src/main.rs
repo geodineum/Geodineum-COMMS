@@ -1632,12 +1632,25 @@ async fn writeback_status(
 /// {geodineum}:gnode:* so every service ACL already grants the write.
 async fn write_heartbeat(conn: &mut redis::aio::MultiplexedConnection, environment: &str) {
     let ns = std::env::var("GNODE_TOPOLOGY_NAMESPACE").unwrap_or_else(|_| "geodineum".to_string());
-    let key = format!("{{{}}}:gnode:heartbeat:{}:comms", ns, environment);
+    // Node segment per CONTRACTS/heartbeat.md: without it, every node in a
+    // constellation wrote the same key and last-writer-won — the dashboard
+    // could not say WHICH node COMMS ran on, and a dead instance hid behind
+    // a live one's fresh ts. First dot-label of the hostname, matching the
+    // daemon's GNODE_NODE_ID convention (short hostname).
+    let node = hostname::get()
+        .ok()
+        .and_then(|h| h.into_string().ok())
+        .and_then(|h| h.split('.').next().map(str::to_string))
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "unknown-node".to_string());
+    let key = format!("{{{}}}:gnode:heartbeat:{}:comms:{}", ns, environment, node);
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let value = format!("{{\"ts\":{},\"pid\":{},\"comp\":\"comms\"}}", ts, std::process::id());
+    let value = format!(
+        "{{\"ts\":{},\"pid\":{},\"comp\":\"comms\",\"node\":\"{}\"}}",
+        ts, std::process::id(), node);
     let res: redis::RedisResult<()> = redis::cmd("SETEX")
         .arg(&key)
         .arg(120)
