@@ -1,8 +1,8 @@
-*⚠️ Alert: {{ content.subject | default(value="System Alert") | tg_escape }}*
+[‌](https://geodineum.com/wp-content/uploads/2026/07/cropped-Geodineum_Logo.png)*⚡ GEODINEUM*
 
-*Priority:* P{{ message.priority | default(value=3) }}
+*{{ content.subject | default(value="System Alert") | tg_escape }}*
 
 {{ content.body | default(value="An alert was triggered.") | tg_escape }}
 
-_Site: {{ site_id | tg_escape }}_
-_Time: {{ timestamp | tg_escape }}_
+*Service:* {{ site_id | tg_escape }} · *P{{ message.priority | default(value=3) }}*
+_{{ timestamp | tg_escape }}_

@@ -278,5 +278,10 @@ mod tg_template_tests {
         // Every '-' '.' '{' '}' outside a formatting entity must carry a
         // backslash. Spot-check the pattern line from the body.
         assert!(body.contains("\\{buttontest\\}"), "braces unescaped: {}", body);
+        // The label is Service, not Site — site_id is a legacy wire name the
+        // operator-facing text must not leak. And the brand header must carry
+        // the logo link that Telegram renders as the preview card.
+        assert!(body.contains("*Service:*"), "label must be Service: {}", body);
+        assert!(body.contains("cropped-Geodineum_Logo.png"), "brand link missing: {}", body);
     }
 }
