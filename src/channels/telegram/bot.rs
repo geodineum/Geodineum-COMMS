@@ -134,19 +134,10 @@ impl TelegramChannel {
         Ok(())
     }
 
-    /// Escape special characters for MarkdownV2
+    /// Escape special characters for MarkdownV2 — one shared copy of the
+    /// character set (templates::tg_escape), used here and as the Tera filter.
     fn escape_markdown_v2(text: &str) -> String {
-        let special_chars = [
-            '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!',
-        ];
-        let mut result = String::with_capacity(text.len() * 2);
-        for c in text.chars() {
-            if special_chars.contains(&c) {
-                result.push('\\');
-            }
-            result.push(c);
-        }
-        result
+        crate::templates::escape_markdown_v2(text)
     }
 
     /// Send a message via the Telegram Bot API, with an optional inline

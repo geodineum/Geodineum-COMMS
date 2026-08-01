@@ -18,7 +18,7 @@ impl TemplateRenderer {
     pub fn new(template_dir: &str) -> Result<Self> {
         let glob_pattern = format!("{}/**/*", template_dir);
 
-        let tera = match Tera::new(&glob_pattern) {
+        let mut tera = match Tera::new(&glob_pattern) {
             Ok(t) => {
                 info!(
                     template_dir = %template_dir,
@@ -38,6 +38,8 @@ impl TemplateRenderer {
             }
         };
 
+        tera.register_filter("tg_escape", crate::templates::tg_escape::tg_escape_filter);
+
         Ok(Self {
             tera: RwLock::new(tera),
             template_dir: template_dir.to_string(),
@@ -47,6 +49,7 @@ impl TemplateRenderer {
     /// Create a template renderer with built-in default templates
     pub fn with_defaults() -> Result<Self> {
         let mut tera = Tera::default();
+        tera.register_filter("tg_escape", crate::templates::tg_escape::tg_escape_filter);
 
         // Register default email templates
         tera.add_raw_template(
@@ -240,5 +243,40 @@ impl TemplateRenderer {
             .filter(|l| !l.is_empty())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+}
+
+#[cfg(test)]
+mod tg_template_tests {
+    use super::*;
+
+    /// Render the REAL alert template with the real grants-CLI subject shape.
+    /// This is the exact input that failed with 400 "can't parse entities"
+    /// for every alert-type telegram notification since the template shipped:
+    /// the template interpolated raw while parse_mode was MarkdownV2, and the
+    /// escaping lived only in the channel's fallback branch.
+    #[tokio::test]
+    async fn alert_template_output_is_valid_markdown_v2() {
+        let r = TemplateRenderer::with_defaults().unwrap();
+        let mut ctx = tera::Context::new();
+        ctx.insert("content", &serde_json::json!({
+            "subject": "[geodineum] grant request gr-1785582550-11706: buttontest",
+            "body": "Service 'buttontest' requests ValKey access:\n\n  patterns: {buttontest}:demo:*\n  timeout:  auto-DENY after 1h",
+        }));
+        ctx.insert("message", &serde_json::json!({"priority": 2}));
+        ctx.insert("site_id", "geodine");
+        ctx.insert("timestamp", "2026-08-01T11:15:17+00:00");
+        ctx.insert("metadata", &serde_json::json!({}));
+        ctx.insert("sender", &serde_json::json!(null));
+
+        let out = r.render("telegram/alert.md", &ctx).await.unwrap();
+        let body = &out.body;
+
+        assert!(body.contains("\\[geodineum\\]"), "brackets unescaped: {}", body);
+        assert!(body.contains("2026\\-08\\-01"), "timestamp unescaped: {}", body);
+        assert!(!body.contains("\n# "), "markdown heading is not MarkdownV2: {}", body);
+        // Every '-' '.' '{' '}' outside a formatting entity must carry a
+        // backslash. Spot-check the pattern line from the body.
+        assert!(body.contains("\\{buttontest\\}"), "braces unescaped: {}", body);
     }
 }

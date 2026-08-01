@@ -18,6 +18,11 @@ triggers:
   # rejected with "WARN unknown action".
   - match: "config/*.service"
     actions: [service-install, restart]
+  # Templates load at startup only; a pulled template change without a
+  # restart keeps serving the old rendering — invisibly, since the daemon
+  # logs nothing about it.
+  - match: "config/templates/**"
+    actions: [restart]
 
 build:
   type: cargo
