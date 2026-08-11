@@ -45,6 +45,16 @@ Interfaces other components may rely on.
   `metadata.callback_stream` from the original outbound message.
   `src/inbound/telegram_receiver.rs`, `src/main.rs`
 
+**Email sender-domain policy.** The email channel only sends *as* a domain
+this host can authenticate. A configured `from_email` whose domain is neither
+listed in `/etc/geodineum/mail/authorized-domains` (written by
+`setup-mail-stack.sh`) nor the domain of `GEODINEUM_DEFAULT_FROM` (unit
+environment, set at ecosystem install) is rewritten to the default sender —
+the site's own address is kept as reply-to — and a rate-limited warning (one
+per 60 s) names the service and the fix. With no default configured the mail
+is sent unmodified and the warning says so. Mail never silently stops; it
+also never silently dies at a recipient's DMARC because we signed nothing.
+
 ### 1.3 Workflow dispatch (stream producer)
 
 - Writes structured workflow requests to `{site_id}:gnode:comms:workflows:{env}`

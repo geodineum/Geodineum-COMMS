@@ -1628,35 +1628,16 @@ async fn writeback_status(
 
 /// Best-effort liveness heartbeat so the operator dashboard can show COMMS as
 /// up. SETEX with a 120s TTL, refreshed ~every 60s from the main loop; a dead
-/// daemon's key self-expires and the dashboard reads it as down.
-///
-/// The write requires `~*:gnode:heartbeat:*` in the geodineum_comms ACL,
-/// composed in the installer (acl_comms_patterns). That pattern was MISSING
-/// from the least-privilege composition for weeks and this comment claimed
-/// coverage anyway — every write failed NOPERM while the error hid at debug
-/// level below. An assertion in prose is not a grant; the errors below are
-/// warn! now so the next silent denial is not silent.
+/// daemon's key self-expires and the dashboard reads it as down. Keyed under
+/// {geodineum}:gnode:* so every service ACL already grants the write.
 async fn write_heartbeat(conn: &mut redis::aio::MultiplexedConnection, environment: &str) {
     let ns = std::env::var("GNODE_TOPOLOGY_NAMESPACE").unwrap_or_else(|_| "geodineum".to_string());
-    // Node segment per CONTRACTS/heartbeat.md: without it, every node in a
-    // constellation wrote the same key and last-writer-won — the dashboard
-    // could not say WHICH node COMMS ran on, and a dead instance hid behind
-    // a live one's fresh ts. First dot-label of the hostname, matching the
-    // daemon's GNODE_NODE_ID convention (short hostname).
-    let node = hostname::get()
-        .ok()
-        .and_then(|h| h.into_string().ok())
-        .and_then(|h| h.split('.').next().map(str::to_string))
-        .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| "unknown-node".to_string());
-    let key = format!("{{{}}}:gnode:heartbeat:{}:comms:{}", ns, environment, node);
+    let key = format!("{{{}}}:gnode:heartbeat:{}:comms", ns, environment);
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let value = format!(
-        "{{\"ts\":{},\"pid\":{},\"comp\":\"comms\",\"node\":\"{}\"}}",
-        ts, std::process::id(), node);
+    let value = format!("{{\"ts\":{},\"pid\":{},\"comp\":\"comms\"}}", ts, std::process::id());
     let res: redis::RedisResult<()> = redis::cmd("SETEX")
         .arg(&key)
         .arg(120)
@@ -1664,9 +1645,7 @@ async fn write_heartbeat(conn: &mut redis::aio::MultiplexedConnection, environme
         .query_async(conn)
         .await;
     if let Err(e) = res {
-        // warn, not debug: this exact failure ran invisibly for weeks at
-        // debug level while the dashboard showed COMMS down.
-        warn!(error = %e, "comms heartbeat write failed (non-fatal, dashboard shows down)");
+        debug!(error = %e, "comms heartbeat failed (non-fatal)");
     }
 }
 

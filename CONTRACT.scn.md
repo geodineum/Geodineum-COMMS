@@ -105,3 +105,4 @@ ISOLATED_FROM: gMath · gNode command/health streams (does not parse t/c/p/ss/sn
 - "CONTRACT says required, code says optional-with-fallback: environment + content drift"
 - "post-ACK retry = XRANGE stream-history re-fetch, failed channels ONLY, all filters re-apply; trim = abandon"
 - "YAML spam blocklists ADDITIVE over curated built-ins — config can only strengthen, never weaken"
+- "sender-domain policy: from_email domain must be in /etc/geodineum/mail/authorized-domains (setup-mail-stack.sh writes it) or match GEODINEUM_DEFAULT_FROM — else sender is REWRITTEN to the default (reply-to keeps the site identity) with a 60s-rate-limited WARN; no default → send as-is + WARN (sender_policy.rs)"

@@ -147,10 +147,14 @@ impl EmailChannel {
     fn build_message(
         &self,
         smtp_config: &SmtpConfig,
+        service_id: &str,
         recipient_email: &str,
         content: &RenderedContent,
     ) -> Result<Message> {
-        let from: Mailbox = format!("{} <{}>", smtp_config.from_name, smtp_config.from_email)
+        // Only send as a domain this host can authenticate; unauthorized
+        // senders fall back to the ecosystem default (see sender_policy).
+        let sender = super::sender_policy::resolve(service_id, &smtp_config.from_email);
+        let from: Mailbox = format!("{} <{}>", smtp_config.from_name, sender.from_email)
             .parse()
             .map_err(|e| CommsError::Email(format!("Invalid from address: {}", e)))?;
 
@@ -168,12 +172,18 @@ impl EmailChannel {
             .to(to)
             .subject(subject);
 
-        // Add reply-to if configured
+        // Add reply-to if configured; when the sender was replaced by the
+        // fallback and no reply-to exists, keep the site's own address as
+        // reply-to so answers still reach the service identity.
         if let Some(ref reply_to) = smtp_config.reply_to {
             let reply_to_mailbox: Mailbox = reply_to
                 .parse()
                 .map_err(|e| CommsError::Email(format!("Invalid reply-to address: {}", e)))?;
             builder = builder.reply_to(reply_to_mailbox);
+        } else if sender.fallback_applied {
+            if let Ok(rt) = smtp_config.from_email.parse::<Mailbox>() {
+                builder = builder.reply_to(rt);
+            }
         }
 
         // Build multipart message if we have HTML
@@ -235,7 +245,7 @@ impl NotificationChannel for EmailChannel {
             .await?;
 
         // Build message
-        let email_message = self.build_message(&smtp_config, recipient_email, &content)?;
+        let email_message = self.build_message(&smtp_config, &message.site_id, recipient_email, &content)?;
 
         // Get transport and send
         let transport = self.get_transport(&smtp_config).await?;

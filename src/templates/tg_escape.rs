@@ -8,7 +8,9 @@
 //! delivery, since the templates shipped. Registered as the Tera filter
 //! `tg_escape` so templates escape at the interpolation site:
 //!
-//!     *Alert: {{ content.subject | tg_escape }}*
+//! ```text
+//! *Alert: {{ content.subject | tg_escape }}*
+//! ```
 
 /// Everything MarkdownV2 treats as syntax. Backslash is NOT in the list —
 /// prepending one per special is the escape; escaping '\\' itself would
