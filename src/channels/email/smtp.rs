@@ -154,9 +154,15 @@ impl EmailChannel {
         // Only send as a domain this host can authenticate; unauthorized
         // senders fall back to the ecosystem default (see sender_policy).
         let sender = super::sender_policy::resolve(service_id, &smtp_config.from_email);
-        let from: Mailbox = format!("{} <{}>", smtp_config.from_name, sender.from_email)
+        // The display name is DATA, never parsed as address syntax:
+        // Mailbox::new encodes any name correctly. The old format!+parse
+        // rejected RFC-comment characters — a from_name containing "(web)"
+        // failed construction and silently killed every mail of a site.
+        let from_addr: lettre::Address = sender
+            .from_email
             .parse()
-            .map_err(|e| CommsError::Email(format!("Invalid from address: {}", e)))?;
+            .map_err(|e| CommsError::Email(format!("Invalid from address '{}': {}", sender.from_email, e)))?;
+        let from = Mailbox::new(Some(smtp_config.from_name.clone()), from_addr);
 
         let to: Mailbox = recipient_email
             .parse()
@@ -361,5 +367,26 @@ impl NotificationChannel for EmailChannel {
                     .with_html(html_body))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use lettre::message::Mailbox;
+
+    /// The from_name that killed every palaciodeobras mail for two days:
+    /// parentheses are RFC 5322 comment syntax, so string-format + parse
+    /// rejects it. Constructing from parts must accept ANY name.
+    #[test]
+    fn display_name_with_parens_builds() {
+        let addr: lettre::Address = "web@palaciodeobras.com".parse().unwrap();
+        let mb = Mailbox::new(Some("Palacio de Obras (web)".to_string()), addr);
+        assert!(mb.to_string().contains("palaciodeobras.com"));
+    }
+
+    #[test]
+    fn parse_of_parens_name_still_fails_proving_the_bug() {
+        let r: Result<Mailbox, _> = "Palacio de Obras (web) <web@palaciodeobras.com>".parse();
+        assert!(r.is_err(), "if this starts passing, the old code path was fine after all");
     }
 }
