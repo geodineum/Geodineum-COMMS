@@ -5,6 +5,14 @@ set -euo pipefail
 # authoritative message/stream format producers must use. Sourced by
 # `geodineum comms contract`.
 
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    echo "Usage: geodineum comms contract"
+    echo ""
+    echo "Print the COMMS integration contract (CONTRACT.md) — the message/stream"
+    echo "format every producer must use."
+    exit 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMMS_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 

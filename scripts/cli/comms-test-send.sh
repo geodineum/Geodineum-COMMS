@@ -7,6 +7,13 @@ COMMON="${GEODINEUM_ROOT}/Geodineum/lib/common.sh"
 [[ -f "$COMMON" ]] && source "$COMMON"
 
 site_id="${1:-}"
+if [[ "$site_id" == "-h" || "$site_id" == "--help" ]]; then
+    echo "Usage: geodineum comms test-send <site_id>"
+    echo ""
+    echo "Push a real test message through the site's COMMS stream and report"
+    echo "the dispatch verdict (a written config is a claim; dispatch is proof)."
+    exit 0
+fi
 if [[ -z "$site_id" ]]; then
     echo "Usage: geodineum comms test-send <site_id>" >&2
     exit 2

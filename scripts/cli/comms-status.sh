@@ -1,6 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    echo "Usage: geodineum comms status"
+    echo ""
+    echo "Show the COMMS daemon's service state and recent dispatch activity."
+    exit 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMMS_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 GEODINEUM_ROOT="${GEODINEUM_ROOT:-/opt/geodineum}"
