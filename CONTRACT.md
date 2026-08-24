@@ -168,7 +168,7 @@ objects).
 | Field | Req | Type | Notes |
 |-------|-----|------|-------|
 | `id` | rec | string | Idempotency key; use a UUID. Defaults to the stream entry id if omitted. |
-| `type` | rec | string | `contact` \| `alert` \| `error` \| `test` \| `system`. Not validated against an enum — any string is stored. (See §7 enum drift.) |
+| `type` | rec | string | `contact` \| `alert` \| `error` \| `test` \| `system`. Not validated against an enum — any string is stored. **Two values never reach a channel: `test` is dropped outright when the daemon runs `--environment production` (ACKed, no log line), and `system` is never dispatched in any environment. Use `alert` for a delivery probe — `test` proves nothing on a production site.** (See §7 enum drift.) |
 | `timestamp` | rec | string | ISO-8601 (`date -Iseconds`). Defaults to now. |
 | `site_id` | opt | string | Informational only — the daemon uses the **stream key**. Include it for readability. |
 | `environment` | rec | string | DTAP tier of the originating site (§3). Drives the non-prod send gate. **Recommended, not enforced**: falls back to the stream-key suffix, then `"unknown"`, if omitted — always stamp it explicitly. (See §7.) |

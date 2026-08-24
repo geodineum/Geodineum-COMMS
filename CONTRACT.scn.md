@@ -76,7 +76,7 @@ alert distribution (type=alert pri 1-2 → multi-channel) · contact-form ingest
 ## ::LIMITATIONS
 
 - `environment` + `content`: CONTRACT historically "required" but code OPTIONAL with fallback (env→stream-suffix→"unknown"; content→flat subject/body/message, Tera skipped). Drift, not live break.
-- type enum reconciled to `contact|alert|error|test|system` across CONTRACT/`outbound_alert.yaml`/client docblock (stray `custom`,`contact-form` removed 2026-06-22); `parse_message` still does NOT validate → any string stored. Reserved control type `settings.reload` (producer gNode-Client on every settings save/delete) = per-site settings-cache invalidation only: daemon drops cached settings + ACKs, NEVER dispatched to a channel.
+- type enum reconciled to `contact|alert|error|test|system` across CONTRACT/`outbound_alert.yaml`/client docblock (stray `custom`,`contact-form` removed 2026-06-22); `parse_message` still does NOT validate → any string stored. SILENT-DROP PAIR: `test` ACKed-and-skipped when daemon `--environment production` (main.rs, no log emitted); `system` never dispatched any env. Delivery probes MUST use `alert` — a `type=test` probe on a production site verifies nothing and times out blaming the daemon. Reserved control type `settings.reload` (producer gNode-Client on every settings save/delete) = per-site settings-cache invalidation only: daemon drops cached settings + ACKs, NEVER dispatched to a channel.
 - DTAP gate keys off hardcoded string `"nonprod_dry_run"` (not enum) — fragile if one site changes, gating breaks SILENTLY.
 - `callback_stream` UNVALIDATED → malformed value written as-is, can misroute.
 - archived env (from metadata.environment, `store.rs`) MAY diverge from routing env (top-level field) → audit confusion.
