@@ -623,6 +623,30 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
                                 )
                                 .await
                                 .ok();
+                        } else if has_reply_options
+                            && !context_id.is_empty()
+                            && !component.is_empty()
+                            && !callback_stream.is_empty()
+                        {
+                            // No chat_id: the producer cannot know the chat —
+                            // site routing picks it. These contexts resolve by
+                            // CALLBACK (poll buttons carry the context id), so
+                            // no per-chat pointer is needed.
+                            let reply_options: Vec<String> = metadata
+                                .get("reply_options")
+                                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                                .unwrap_or_default();
+
+                            conv_state
+                                .track_callback_context(
+                                    &message.site_id,
+                                    context_id,
+                                    component,
+                                    &reply_options,
+                                    callback_stream,
+                                )
+                                .await
+                                .ok();
                         }
                     }
 
@@ -1279,8 +1303,26 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
                                             ).await;
                                         }
                                     }
-                                    CommandAction::Callback { data, query_id, message_id: _ } => {
-                                        if let Some(ref token) = inbound_bot_token {
+                                    CommandAction::Callback { data, query_id, message_id } => {
+                                        // Poll votes are handled BEFORE the generic ack:
+                                        // their answer_callback carries the recorded choice
+                                        // (the toast is the confirmation), and the keyboard
+                                        // is cleared so a second vote has nothing to press.
+                                        if data.starts_with("poll:") {
+                                            if let Some(ref token) = inbound_bot_token {
+                                                handle_poll_callback(
+                                                    &mut inbound_conn,
+                                                    token,
+                                                    &chat_id,
+                                                    &operator_id,
+                                                    &operator_name,
+                                                    &data,
+                                                    &query_id,
+                                                    message_id,
+                                                )
+                                                .await;
+                                            }
+                                        } else if let Some(ref token) = inbound_bot_token {
                                             // Answer the callback (removes loading spinner)
                                             answer_callback(token, &query_id, None).await;
 
@@ -1795,6 +1837,148 @@ async fn answer_callback(bot_token: &str, query_id: &str, text: Option<&str>) {
         payload["text"] = serde_json::Value::String(t.to_string());
     }
     let _ = client.post(&url).json(&payload).send().await;
+}
+
+/// Clear the inline keyboard on a message — the buttons disappear the moment
+/// a vote lands, so there is nothing left to press twice. Best-effort: a
+/// failed edit never blocks the recorded vote.
+async fn edit_message_clear_keyboard(bot_token: &str, chat_id: &str, message_id: i64) {
+    let client = reqwest::Client::new();
+    let url = format!(
+        "https://api.telegram.org/bot{}/editMessageReplyMarkup",
+        bot_token
+    );
+    let payload = serde_json::json!({
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "reply_markup": { "inline_keyboard": [] },
+    });
+    let _ = client.post(&url).json(&payload).send().await;
+}
+
+/// A poll button was pressed: `poll:<site>:<context_id>:<option_index>`.
+///
+/// The context was stored at dispatch (`{<site>}:comms:context:<id>`, 24h TTL)
+/// with the option labels and the producer's own callback stream, so the vote
+/// is delivered into the producer's namespace — no cross-site grant anywhere.
+/// First press wins: the vote is claimed with HSETNX on the context hash, a
+/// second press (or a race from another admin) gets a toast naming what was
+/// already recorded, and the keyboard is cleared either way. Only allowlisted
+/// operators ever reach this code — the receiver drops other ids before the
+/// inbound stream (same gate the grants buttons rely on).
+#[allow(clippy::too_many_arguments)]
+async fn handle_poll_callback(
+    conn: &mut redis::aio::MultiplexedConnection,
+    bot_token: &str,
+    chat_id: &str,
+    operator_id: &str,
+    operator_name: &str,
+    data: &str,
+    query_id: &str,
+    message_id: Option<i64>,
+) {
+    let mut parts = data["poll:".len()..].splitn(3, ':');
+    let (site, ctx, idx) = match (parts.next(), parts.next(), parts.next()) {
+        (Some(s), Some(c), Some(i)) if !s.is_empty() && !c.is_empty() => (s, c, i),
+        _ => {
+            answer_callback(bot_token, query_id, Some("Malformed poll button.")).await;
+            return;
+        }
+    };
+    let ctx_key = format!("{{{}}}:comms:context:{}", site, ctx);
+    let fields: std::collections::HashMap<String, String> = match redis::cmd("HGETALL")
+        .arg(&ctx_key)
+        .query_async(conn)
+        .await
+    {
+        Ok(f) => f,
+        Err(e) => {
+            warn!(error = %e, "poll: context read failed");
+            answer_callback(bot_token, query_id, Some("Poll storage unreachable — try again.")).await;
+            return;
+        }
+    };
+    if fields.is_empty() {
+        answer_callback(bot_token, query_id, Some("This poll is closed or expired.")).await;
+        if let Some(mid) = message_id {
+            edit_message_clear_keyboard(bot_token, chat_id, mid).await;
+        }
+        return;
+    }
+    let options: Vec<String> = fields
+        .get("reply_options")
+        .and_then(|o| serde_json::from_str(o).ok())
+        .unwrap_or_default();
+    let label = idx
+        .parse::<usize>()
+        .ok()
+        .and_then(|i| options.get(i).cloned())
+        .unwrap_or_else(|| format!("option {}", idx));
+
+    // First press wins.
+    let claimed: i64 = redis::cmd("HSETNX")
+        .arg(&ctx_key)
+        .arg("poll_vote")
+        .arg(format!("{}:{}:{}", idx, operator_id, operator_name))
+        .query_async(conn)
+        .await
+        .unwrap_or(0);
+    if claimed == 0 {
+        let prev = fields
+            .get("poll_vote")
+            .and_then(|v| v.split(':').next())
+            .and_then(|i| i.parse::<usize>().ok())
+            .and_then(|i| options.get(i).cloned())
+            .unwrap_or_else(|| "a choice".into());
+        answer_callback(
+            bot_token,
+            query_id,
+            Some(&format!("Already recorded: {}", prev)),
+        )
+        .await;
+        if let Some(mid) = message_id {
+            edit_message_clear_keyboard(bot_token, chat_id, mid).await;
+        }
+        return;
+    }
+
+    let callback_stream = fields.get("callback_stream").cloned().unwrap_or_default();
+    let component = fields.get("component").cloned().unwrap_or_default();
+    if !callback_stream.is_empty() {
+        let res: redis::RedisResult<String> = redis::cmd("XADD")
+            .arg(&callback_stream)
+            .arg("*")
+            .arg(&[
+                ("ev", "poll_vote"),
+                ("context_id", ctx),
+                ("site", site),
+                ("component", component.as_str()),
+                ("option", label.as_str()),
+                ("option_index", idx),
+                ("operator_id", operator_id),
+                ("operator_name", operator_name),
+                ("channel_source", "telegram"),
+                ("ts", &chrono::Utc::now().to_rfc3339()),
+            ])
+            .query_async(conn)
+            .await;
+        match res {
+            Ok(id) => info!(vote_id = %id, context_id = %ctx, option = %label, stream = %callback_stream, "poll: vote recorded"),
+            Err(e) => warn!(error = %e, context_id = %ctx, "poll: vote XADD failed (claim stands; producer will not see it)"),
+        }
+    } else {
+        warn!(context_id = %ctx, "poll: context has no callback_stream — vote claimed but undeliverable");
+    }
+
+    answer_callback(
+        bot_token,
+        query_id,
+        Some(&format!("\u{2713} {} \u{2014} recorded", label)),
+    )
+    .await;
+    if let Some(mid) = message_id {
+        edit_message_clear_keyboard(bot_token, chat_id, mid).await;
+    }
 }
 
 /// Read pipeline status from ValKey metrics

@@ -261,6 +261,37 @@ impl ConversationState {
 
     /// Track a context for reply-correlation.
     /// Called when an outbound alert has reply_options (e.g., QUARANTINE/DISMISS).
+    /// Track a context that will be resolved by CALLBACK (inline button), not
+    /// by a typed reply. Buttons carry the context id in their callback_data,
+    /// so no per-chat active-context pointer is needed — which also means the
+    /// producer does not have to know a chat_id. Used by poll messages.
+    pub async fn track_callback_context(
+        &mut self,
+        site_id: &str,
+        context_id: &str,
+        component: &str,
+        reply_options: &[String],
+        callback_stream: &str,
+    ) -> Result<()> {
+        let ctx_key = Self::ctx_key(site_id, context_id);
+        let options_json = serde_json::to_string(reply_options)
+            .map_err(|e| CommsError::Internal(format!("Failed to serialize reply_options: {}", e)))?;
+        let now = Utc::now().to_rfc3339();
+        let fields: Vec<(&str, &str)> = vec![
+            ("component", component),
+            ("reply_options", &options_json),
+            ("callback_stream", callback_stream),
+            ("created_at", &now),
+        ];
+        redis::pipe()
+            .cmd("HSET").arg(&ctx_key).arg(&fields)
+            .cmd("EXPIRE").arg(&ctx_key).arg(CONTEXT_TTL_SECS)
+            .query_async::<()>(&mut self.conn)
+            .await
+            .map_err(|e| CommsError::Internal(format!("Failed to track callback context: {}", e)))?;
+        Ok(())
+    }
+
     pub async fn track_context(
         &mut self,
         site_id: &str,
