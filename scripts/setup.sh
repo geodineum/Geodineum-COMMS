@@ -119,10 +119,10 @@ echo ""
 echo "📋 Quick Start:"
 echo ""
 echo "   # Test channels:"
-echo "   ./target/release/geodineum-comms --redis-auth \"\$(cat .gnode/valkey_comms.password)\" test --site-id your_site --channel all"
+echo "   ./target/release/geodineum-comms --redis-auth-file .gnode/valkey_comms.password test --site-id your_site --channel all"
 echo ""
 echo "   # Run daemon (foreground):"
-echo "   ./target/release/geodineum-comms --redis-auth \"\$(cat .gnode/valkey_comms.password)\" start"
+echo "   ./target/release/geodineum-comms --redis-auth-file .gnode/valkey_comms.password start"
 echo ""
 
 if [[ "$INSTALL_SERVICE" == "true" ]]; then

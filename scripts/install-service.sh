@@ -157,12 +157,11 @@ Environment="RUST_LOG=geodineum_comms=$LOG_LEVEL"
 Environment="ENVIRONMENT=$ENVIRONMENT"
 Environment="LOG_LEVEL=$LOG_LEVEL"
 
-# Load password from file (secure, not in environment)
-ExecStart=/bin/bash -c 'exec $BINARY \\
-    --redis-auth "\$(cat $PASSWORD_FILE)" \\
+ExecStart=$BINARY \\
+    --redis-auth-file $PASSWORD_FILE \\
     --environment $ENVIRONMENT \\
     --log-level $LOG_LEVEL \\
-    start'
+    start
 
 # Restart policy
 Restart=on-failure

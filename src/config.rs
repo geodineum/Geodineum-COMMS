@@ -22,9 +22,14 @@ pub struct Cli {
     #[arg(long, default_value = "geodineum_comms", env = "VALKEY_USER")]
     pub redis_user: String,
 
-    /// ValKey ACL password
-    #[arg(long, env = "VALKEY_AUTH")]
+    /// ValKey ACL password. Visible to every local user in the process list; prefer
+    /// --redis-auth-file
+    #[arg(long, env = "VALKEY_AUTH", conflicts_with = "redis_auth_file")]
     pub redis_auth: Option<String>,
+
+    /// File holding the ValKey ACL password, read once at start
+    #[arg(long, env = "VALKEY_AUTH_FILE")]
+    pub redis_auth_file: Option<PathBuf>,
 
     /// Path to configuration file
     #[arg(long, short, default_value = "config/default.yaml")]
@@ -56,6 +61,33 @@ pub struct Cli {
     /// Subcommand
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+impl Cli {
+    /// The ValKey URL, with the password read from `--redis-auth-file` or taken from
+    /// `--redis-auth`.
+    pub fn redis_url(&self) -> anyhow::Result<String> {
+        let auth = match (&self.redis_auth_file, &self.redis_auth) {
+            (Some(path), _) => {
+                let secret = std::fs::read_to_string(path).map_err(|e| {
+                    anyhow::anyhow!("cannot read --redis-auth-file {}: {}", path.display(), e)
+                })?;
+                let secret = secret.trim().to_string();
+                if secret.is_empty() {
+                    anyhow::bail!("--redis-auth-file {} is empty", path.display());
+                }
+                Some(secret)
+            }
+            (None, auth) => auth.clone(),
+        };
+        Ok(match auth {
+            Some(auth) => format!(
+                "redis://{}:{}@{}:{}/",
+                self.redis_user, auth, self.redis_host, self.redis_port
+            ),
+            None => format!("redis://{}:{}/", self.redis_host, self.redis_port),
+        })
+    }
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -464,5 +496,47 @@ impl Config {
         };
 
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::Cli;
+    use clap::Parser;
+
+    fn secret_file(name: &str, body: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("comms-auth-{}-{}", std::process::id(), name));
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[test]
+    fn the_password_file_is_read_and_trimmed() {
+        let path = secret_file("ok", "s3cret\n");
+        let cli = Cli::try_parse_from(["geodineum-comms", "--redis-auth-file", path.to_str().unwrap()]).unwrap();
+        assert_eq!(cli.redis_url().unwrap(), "redis://geodineum_comms:s3cret@127.0.0.1:47445/");
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn a_missing_or_empty_password_file_is_an_error() {
+        let cli = Cli::try_parse_from(["geodineum-comms", "--redis-auth-file", "/nonexistent/comms"]).unwrap();
+        assert!(cli.redis_url().is_err());
+        let path = secret_file("empty", "  \n");
+        let cli = Cli::try_parse_from(["geodineum-comms", "--redis-auth-file", path.to_str().unwrap()]).unwrap();
+        assert!(cli.redis_url().unwrap_err().to_string().contains("empty"));
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn a_password_and_a_password_file_together_are_refused() {
+        let both = Cli::try_parse_from(["geodineum-comms", "--redis-auth", "x", "--redis-auth-file", "/tmp/y"]);
+        assert!(both.is_err());
+    }
+
+    #[test]
+    fn no_password_means_no_credentials_in_the_url() {
+        let cli = Cli::try_parse_from(["geodineum-comms"]).unwrap();
+        assert_eq!(cli.redis_url().unwrap(), "redis://127.0.0.1:47445/");
     }
 }

@@ -124,6 +124,9 @@ async fn main() -> anyhow::Result<()> {
         version = env!("CARGO_PKG_VERSION"),
         "Starting Geodineum-COMMS"
     );
+    if cli.redis_auth.is_some() {
+        warn!("ValKey password given as --redis-auth or VALKEY_AUTH; use --redis-auth-file so it stays out of the process list");
+    }
 
     // Load configuration
     let config = Config::load(&cli.config)?;
@@ -216,15 +219,7 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
         "Connecting to ValKey"
     );
 
-    // Build ValKey connection string
-    let redis_url = if let Some(ref auth) = cli.redis_auth {
-        format!(
-            "redis://{}:{}@{}:{}/",
-            cli.redis_user, auth, cli.redis_host, cli.redis_port
-        )
-    } else {
-        format!("redis://{}:{}/", cli.redis_host, cli.redis_port)
-    };
+    let redis_url = cli.redis_url()?;
 
     // Connect to ValKey
     let client = redis::Client::open(redis_url)?;
@@ -2104,15 +2099,7 @@ async fn run_test(
         "Testing notification channels"
     );
 
-    // Build connection
-    let redis_url = if let Some(ref auth) = cli.redis_auth {
-        format!(
-            "redis://{}:{}@{}:{}/",
-            cli.redis_user, auth, cli.redis_host, cli.redis_port
-        )
-    } else {
-        format!("redis://{}:{}/", cli.redis_host, cli.redis_port)
-    };
+    let redis_url = cli.redis_url()?;
 
     let client = redis::Client::open(redis_url)?;
     let conn = client.get_multiplexed_tokio_connection().await?;
