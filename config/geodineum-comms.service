@@ -50,10 +50,12 @@ EnvironmentFile=-/etc/geodineum/components/geodineum-comms/geodineum-comms.env
 # geodeploy_fix_binaries owns executable bits.
 # No --api-port/--api-bind flags — the Admin API was removed; clap
 # exits status=2 on an unknown argument.
-ExecStart=/bin/bash -c 'exec /opt/geodineum/Geodineum-COMMS/target/release/geodineum-comms \
-    --redis-auth "$(cat /etc/geodineum/credentials/valkey_comms.password)" \
+# The daemon reads its password file itself: a password on the command line,
+# even one produced by $(cat …), is readable by every local user through ps.
+ExecStart=/opt/geodineum/Geodineum-COMMS/target/release/geodineum-comms \
+    --redis-auth-file /etc/geodineum/credentials/valkey_comms.password \
     --log-level info \
-    start'
+    start
 
 # always, not on-failure: a clean-but-unintended exit must also come back.
 Restart=always
