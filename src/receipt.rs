@@ -5,7 +5,7 @@
 //! hash the dashboard overlays, keyed by stream entry id. That hash is a
 //! projection — mutable, unsigned, 30-day TTL, and readable only by whoever
 //! already knows the key. A receipt is the durable, tamper-evident record of
-//! the same outcome, and it is what observers (GeoV, gFlow, gDash) consume.
+//! the same outcome, and it is what observers (gFlow, gDash) consume.
 //!
 //! WHY THIS IS A SECOND IMPLEMENTATION, DELIBERATELY
 //! The gNode daemon has its own copy of this logic in Rust. This is not an
