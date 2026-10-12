@@ -24,6 +24,37 @@ pub fn scrub_reqwest_url(e: &reqwest::Error) -> String {
     }
 }
 
+/// Redact `bot<id>:<secret>` wherever it appears. Telegram errors are built
+/// with `format!("…: {}", e)` from reqwest errors whose URL embeds the token.
+pub fn scrub_bot_token(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i..].starts_with(b"bot") {
+            let mut j = i + 3;
+            while j < b.len() && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > i + 3 && j < b.len() && b[j] == b':' {
+                let mut k = j + 1;
+                while k < b.len() && (b[k].is_ascii_alphanumeric() || b[k] == b'_' || b[k] == b'-') {
+                    k += 1;
+                }
+                if k > j + 1 {
+                    out.push_str("bot<redacted>");
+                    i = k;
+                    continue;
+                }
+            }
+        }
+        let ch = s[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
 /// Main error type for Geodineum-COMMS
 #[derive(Error, Debug)]
 pub enum CommsError {
@@ -39,7 +70,7 @@ pub enum CommsError {
     #[error("Email error: {0}")]
     Email(String),
 
-    #[error("Telegram error: {0}")]
+    #[error("Telegram error: {}", scrub_bot_token(_0))]
     Telegram(String),
 
     #[error("SMS error: {0}")]
@@ -112,5 +143,25 @@ impl DispatchError {
     pub fn sms(error: CommsError) -> Self {
         let retryable = matches!(&error, CommsError::Http(_) | CommsError::Internal(_));
         Self::new("sms", error, retryable)
+    }
+}
+
+#[cfg(test)]
+mod scrub_tests {
+    use super::*;
+
+    #[test]
+    fn telegram_error_never_displays_the_token() {
+        let e = CommsError::Telegram(
+            "getUpdates failed: error sending request for url (https://api.telegram.org/bot123456:AAG-x_y9/getUpdates?offset=0)".into(),
+        );
+        let shown = e.to_string();
+        assert!(!shown.contains("AAG-x_y9"), "{}", shown);
+        assert!(shown.contains("api.telegram.org/bot<redacted>/getUpdates"), "{}", shown);
+    }
+
+    #[test]
+    fn ordinary_text_is_untouched() {
+        assert_eq!(scrub_bot_token("robot: 5 bots, bot:x, Bad Gateway"), "robot: 5 bots, bot:x, Bad Gateway");
     }
 }
