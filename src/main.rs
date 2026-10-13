@@ -271,7 +271,7 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
             .unwrap_or_else(|_| "default".to_string())
     });
 
-    let mut consumer = StreamConsumer::new(conn.clone(), site_discovery, node_id)
+    let mut consumer = StreamConsumer::new(conn.clone(), site_discovery, node_id.clone())
         .with_block_ms(config.consumer.block_ms)
         .with_batch_size(config.consumer.batch_size)
         .with_discovery_interval(config.consumer.discovery_interval_secs);
@@ -466,7 +466,7 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
     // Write once up front so COMMS shows up immediately, then refresh on a
     // ~60s cadence from the loop tail.
     let mut heartbeat_conn = conn.clone();
-    write_heartbeat(&mut heartbeat_conn, &cli.environment).await;
+    write_heartbeat(&mut heartbeat_conn, &cli.environment, &node_id).await;
     let mut last_heartbeat = Instant::now();
 
     // Main processing loop
@@ -994,7 +994,7 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
         // Refresh the liveness heartbeat (~60s cadence, 120s TTL).
         if last_heartbeat.elapsed() >= Duration::from_secs(60) {
             last_heartbeat = Instant::now();
-            write_heartbeat(&mut heartbeat_conn, &cli.environment).await;
+            write_heartbeat(&mut heartbeat_conn, &cli.environment, &node_id).await;
         }
 
         // ── Inbound message processing ─────────────────────────────────────
@@ -1663,18 +1663,21 @@ async fn writeback_status(
     }
 }
 
-/// Best-effort liveness heartbeat so the operator dashboard can show COMMS as
-/// up. SETEX with a 120s TTL, refreshed ~every 60s from the main loop; a dead
-/// daemon's key self-expires and the dashboard reads it as down. Keyed under
-/// {geodineum}:gnode:* so every service ACL already grants the write.
-async fn write_heartbeat(conn: &mut redis::aio::MultiplexedConnection, environment: &str) {
+/// Liveness heartbeat (CONTRACTS/heartbeat.md): SETEX
+/// `{<constellation>}:gnode:heartbeat:<env>:comms:<node>` with a 120s TTL, refreshed
+/// ~every 60s from the main loop. The node segment is the short hostname, so the
+/// daemon's placement health can say WHICH node COMMS runs on; a dead process's key
+/// self-expires and that placement reads as dead. The write needs the heartbeat
+/// grant the installer gives the comms user; a failure is logged at warn.
+async fn write_heartbeat(conn: &mut redis::aio::MultiplexedConnection, environment: &str, node_id: &str) {
     let ns = std::env::var("GNODE_TOPOLOGY_NAMESPACE").unwrap_or_else(|_| "geodineum".to_string());
-    let key = format!("{{{}}}:gnode:heartbeat:{}:comms", ns, environment);
+    let node = node_id.split('.').next().filter(|s| !s.is_empty()).unwrap_or("unknown-node");
+    let key = format!("{{{}}}:gnode:heartbeat:{}:comms:{}", ns, environment, node);
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let value = format!("{{\"ts\":{},\"pid\":{},\"comp\":\"comms\"}}", ts, std::process::id());
+    let value = format!("{{\"ts\":{},\"pid\":{},\"comp\":\"comms\",\"node\":\"{}\"}}", ts, std::process::id(), node);
     let res: redis::RedisResult<()> = redis::cmd("SETEX")
         .arg(&key)
         .arg(120)
@@ -1682,7 +1685,7 @@ async fn write_heartbeat(conn: &mut redis::aio::MultiplexedConnection, environme
         .query_async(conn)
         .await;
     if let Err(e) = res {
-        debug!(error = %e, "comms heartbeat failed (non-fatal)");
+        warn!(error = %e, key = %key, "comms heartbeat failed: the placement will read as dead");
     }
 }
 
