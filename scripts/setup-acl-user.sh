@@ -169,7 +169,9 @@ fi
 #   - Site discovery: gnode:site:*:meta, gnode:sites:registry (read-only)
 #   - Global GSD keys: gnode:* (for routing info)
 #
-# The ~* pattern for comms is intentional - we need cross-site access
+# The ~* pattern for comms is intentional: COMMS delivers for every site, and the
+# wildcard tag is the one cross-constellation read of the estate (D17; R-3 retires
+# it). The heartbeat grant is its own key in every constellation it serves.
 
 "$GNODE_DIR/scripts/valkey-cli-secure.sh" ACL SETUSER "$ACL_USER" resetkeys \
     '~*:gnode:comms:*' \
@@ -185,6 +187,7 @@ fi
     '~gnode:routing:*' \
     '~topology:*' \
     '~*:gnode:schema:*' \
+    '~*:gnode:heartbeat:*:comms:*' \
     '~*:gnode:unified:*' \
     '~*:inference:metrics:*' \
     '~*:inference:history:*'
