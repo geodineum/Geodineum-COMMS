@@ -54,6 +54,13 @@ pub struct Cli {
     #[arg(long, default_value = "false", env = "ALLOW_NONPROD_SEND")]
     pub allow_nonprod_send: bool,
 
+    /// Delivery master switch. `off` makes every outbound send impossible: no email,
+    /// Telegram or SMS leaves the process and Telegram inbound is not started. Messages
+    /// are still consumed, archived as skipped and acknowledged. For running against
+    /// a copy of a live store.
+    #[arg(long, value_enum, default_value = "on", env = "COMMS_DELIVERY")]
+    pub delivery: Delivery,
+
     /// Template directory
     #[arg(long, default_value = "config/templates")]
     pub template_dir: String,
@@ -61,6 +68,12 @@ pub struct Cli {
     /// Subcommand
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Delivery {
+    On,
+    Off,
 }
 
 impl Cli {

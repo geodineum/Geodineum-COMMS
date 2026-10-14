@@ -144,6 +144,14 @@ email/SMS/Telegram.
   non-production daemon deliver for real, start it with `--allow-nonprod-send`
   (env `ALLOW_NONPROD_SEND=true`).
 
+**Delivery master switch.** `--delivery off` (env `COMMS_DELIVERY=off`, default
+`on`) makes every outbound send impossible regardless of environment, routing
+rules or site settings: `dispatch_to_channel` returns the `delivery_off` skip
+before a channel is looked up, Telegram inbound polling and replies are not
+started, and the `test` subcommand refuses. Messages are still consumed,
+archived as skipped and acknowledged. Use it to run the daemon against a copy
+of a live store.
+
 ---
 
 ## 4. Wire formats

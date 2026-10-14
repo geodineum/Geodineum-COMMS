@@ -284,6 +284,7 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
         channel_registry.clone(),
         settings_store.clone(),
         cli.allow_nonprod_send,
+        cli.delivery == geodineum_comms::config::Delivery::Off,
     );
 
     // Create spam filter: built-in blocklists extended by the YAML config
@@ -342,12 +343,15 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
         .and_then(|i| i.site_id.clone())
         .unwrap_or_else(|| "geodine".to_string());
 
-    let inbound_bot_token: Option<String> = config
-        .inbound
-        .as_ref()
-        .and_then(|i| i.bot_token.clone());
+    let delivery_off = cli.delivery == geodineum_comms::config::Delivery::Off;
+    let inbound_bot_token: Option<String> = if delivery_off {
+        warn!("DELIVERY OFF: no email, Telegram or SMS will be sent; Telegram inbound disabled");
+        None
+    } else {
+        config.inbound.as_ref().and_then(|i| i.bot_token.clone())
+    };
 
-    if let Some(ref inbound_cfg) = config.inbound {
+    if let Some(ref inbound_cfg) = config.inbound.as_ref().filter(|_| !delivery_off) {
         if let Some(ref bot_token) = inbound_cfg.bot_token {
             // an earlier hardening pass: preserve the Option<Vec> shape rather than
             // `.unwrap_or_default()` flattening, so the receiver can
@@ -2096,6 +2100,9 @@ async fn run_test(
     site_id: &str,
     channel: &str,
 ) -> anyhow::Result<()> {
+    if cli.delivery == geodineum_comms::config::Delivery::Off {
+        anyhow::bail!("delivery is off: the channel test sends for real");
+    }
     info!(
         site_id = %site_id,
         channel = %channel,

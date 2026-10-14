@@ -42,6 +42,23 @@ pub struct MessageDispatcher {
     /// "production" are dry-run instead of sent (crate::dtap). The safety gate
     /// — non-prod sites must not emit real email/SMS/Telegram.
     allow_nonprod_send: bool,
+    /// Master switch: when true no channel `send` is ever reached.
+    delivery_off: bool,
+}
+
+/// Skip markers that mean "intentionally not sent": acknowledged and archived as
+/// skipped, never retried.
+pub const SKIP_MARKERS: [&str; 3] = ["disabled", "no_recipients", "nonprod_dry_run"];
+
+/// The skip marker that blocks a send before it is attempted, if any.
+pub fn send_block(delivery_off: bool, allow_nonprod_send: bool, environment: &str) -> Option<&'static str> {
+    if delivery_off {
+        return Some("delivery_off");
+    }
+    if !crate::dtap::is_production(environment) && !allow_nonprod_send {
+        return Some("nonprod_dry_run");
+    }
+    None
 }
 
 impl MessageDispatcher {
@@ -49,11 +66,13 @@ impl MessageDispatcher {
         channel_registry: Arc<ChannelRegistry>,
         settings_store: Arc<SettingsStore>,
         allow_nonprod_send: bool,
+        delivery_off: bool,
     ) -> Self {
         Self {
             channel_registry,
             settings_store,
             allow_nonprod_send,
+            delivery_off,
         }
     }
 
@@ -136,10 +155,7 @@ impl MessageDispatcher {
                         // send firing. nonprod_dry_run is the non-prod gate: the
                         // intended recipients were logged in dispatch_to_channel
                         // but no real send fired (non-production environment).
-                        if err_msg == "disabled"
-                            || err_msg == "no_recipients"
-                            || err_msg == "nonprod_dry_run"
-                        {
+                        if err_msg == "delivery_off" || SKIP_MARKERS.contains(&err_msg.as_str()) {
                             result.skipped_channels.push(channel.clone());
                             continue;
                         }
@@ -214,6 +230,19 @@ impl MessageDispatcher {
         message: &CommsMessage,
         settings: &SiteSettings,
     ) -> Result<()> {
+        if send_block(self.delivery_off, true, &message.environment) == Some("delivery_off") {
+            warn!(
+                site_id = %message.site_id,
+                message_id = %message.id,
+                channel = %channel_name,
+                "DELIVERY OFF — recorded, nothing sent"
+            );
+            return Err(CommsError::Channel {
+                channel: channel_name.to_string(),
+                message: "delivery_off".to_string(),
+            });
+        }
+
         // Get channel provider
         let channel = self.channel_registry.get(channel_name).ok_or_else(|| {
             CommsError::Channel {
@@ -284,7 +313,7 @@ impl MessageDispatcher {
         // email/SMS/Telegram. Returns the "nonprod_dry_run" skip so the parent
         // loop ACKs the message (terminal — retrying won't change the
         // environment) and records it as skipped, not sent.
-        if !crate::dtap::is_production(&message.environment) && !self.allow_nonprod_send {
+        if send_block(false, self.allow_nonprod_send, &message.environment).is_some() {
             let subject = message.content.subject.as_deref().unwrap_or("(no subject)");
             for recipient in &recipients {
                 warn!(
@@ -374,5 +403,23 @@ impl MessageDispatcher {
             .filter(|r| r.should_receive(&message.message_type, message.priority))
             .cloned()
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delivery_off_blocks_production() {
+        assert_eq!(send_block(true, true, "production"), Some("delivery_off"));
+        assert_eq!(send_block(true, false, "production"), Some("delivery_off"));
+    }
+
+    #[test]
+    fn delivery_on_keeps_the_dtap_gate() {
+        assert_eq!(send_block(false, false, "staging"), Some("nonprod_dry_run"));
+        assert_eq!(send_block(false, true, "staging"), None);
+        assert_eq!(send_block(false, false, "production"), None);
     }
 }

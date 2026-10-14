@@ -18,7 +18,7 @@ Notification daemon. gNode=Sun, ValKey=common backend. Stateless/state-aware: co
 - consumer group: `geodineum_comms_dispatch`
 - parse: `parse_message(stream_key,entry)->CommsMessage` `stream_reader.rs`
 - read/ack: `XREADGROUP` `stream_reader.rs` · `XACK` `stream_reader.rs`
-- route+gate: `dispatch(msg)->DispatchResult` `dispatcher.rs` · retry-narrowed `dispatch_channels(msg,only)` `dispatcher.rs` · gate@`dispatch_to_channel` skip-marker string `"nonprod_dry_run"` `dispatcher.rs`
+- route+gate: `dispatch(msg)->DispatchResult` `dispatcher.rs` · retry-narrowed `dispatch_channels(msg,only)` `dispatcher.rs` · gate@`dispatch_to_channel` skip-marker string `"nonprod_dry_run"` `dispatcher.rs` · master switch `--delivery off`/`COMMS_DELIVERY=off` → skip-marker `"delivery_off"` BEFORE channel lookup, inbound Telegram not started, `test` refuses `dispatcher.rs` `main.rs`
 - channel trait: `send(msg,recipient,config)->SendResult` `channels/channel.rs`
 - dtap: `is_production(env)` case-insensitive `=="production"` ONLY `dtap.rs`
 - validation: site_id `^[a-z0-9_-]{1,64}$` `stream_reader.rs` · field cap 64KiB `parse_field_safely`
