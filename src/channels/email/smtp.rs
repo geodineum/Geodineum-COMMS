@@ -43,10 +43,9 @@ pub struct SmtpConfig {
     #[serde(default = "default_from_name")]
     pub from_name: String,
     pub reply_to: Option<String>,
-    // gCore writes `smtp_tls`; accept it as an alias. gCore defaults it false for
-    // the localhost:25 plaintext relay (get_transport uses builder_dangerous).
-    #[serde(alias = "smtp_tls", default = "default_use_tls")]
-    pub use_tls: bool,
+    // gCore writes `smtp_tls`; accept it as an alias. Absent ⇒ see SmtpConfig::tls.
+    #[serde(alias = "smtp_tls", default)]
+    pub use_tls: Option<bool>,
 }
 
 fn default_smtp_host() -> String {
@@ -58,11 +57,18 @@ fn default_smtp_port() -> u16 {
 fn default_from_name() -> String {
     "Geodineum".to_string()
 }
-fn default_use_tls() -> bool {
-    true
-}
 
 impl SmtpConfig {
+    /// An unset TLS flag means plaintext for a loopback relay (its certificate is
+    /// the host's self-signed one) and STARTTLS/SMTPS for anything else.
+    pub fn tls(&self) -> bool {
+        self.use_tls.unwrap_or_else(|| {
+            let h = self.smtp_host.trim_matches(|c| c == '[' || c == ']');
+            !(h.eq_ignore_ascii_case("localhost")
+                || h.parse::<std::net::IpAddr>().map_or(false, |ip| ip.is_loopback()))
+        })
+    }
+
     /// Extract SmtpConfig from generic ChannelConfig
     pub fn from_channel_config(config: &ChannelConfig) -> Result<Self> {
         let config_json = serde_json::to_value(&config.config)
@@ -108,7 +114,7 @@ impl EmailChannel {
             None
         };
 
-        let transport = if smtp_config.use_tls {
+        let transport = if smtp_config.tls() {
             if smtp_config.smtp_port == 465 {
                 // Implicit TLS (SMTPS)
                 let mut builder = AsyncSmtpTransport::<lettre::Tokio1Executor>::relay(&smtp_config.smtp_host)
@@ -388,5 +394,18 @@ mod tests {
     fn parse_of_parens_name_still_fails_proving_the_bug() {
         let r: Result<Mailbox, _> = "Palacio de Obras (web) <web@palaciodeobras.com>".parse();
         assert!(r.is_err(), "if this starts passing, the old code path was fine after all");
+    }
+
+    /// nierto_com's config named 127.0.0.1:25 without a TLS flag; the old default
+    /// (true) demanded STARTTLS against Postfix's self-signed certificate.
+    #[test]
+    fn unset_tls_follows_the_host() {
+        let cfg = |v: serde_json::Value| -> super::SmtpConfig { serde_json::from_value(v).unwrap() };
+        assert!(!cfg(serde_json::json!({"smtp_host": "127.0.0.1", "smtp_port": 25})).tls());
+        assert!(!cfg(serde_json::json!({})).tls());
+        assert!(!cfg(serde_json::json!({"smtp_host": "::1"})).tls());
+        assert!(cfg(serde_json::json!({"smtp_host": "smtp.example.org", "smtp_port": 587})).tls());
+        assert!(cfg(serde_json::json!({"smtp_host": "127.0.0.1", "smtp_tls": true})).tls());
+        assert!(!cfg(serde_json::json!({"smtp_host": "smtp.example.org", "use_tls": false})).tls());
     }
 }
