@@ -45,3 +45,8 @@ cli:
       description: Send a test notification to a site
       requires_sudo: true
       category: COMMS
+    - name: comms recipients
+      handler: scripts/cli/comms-recipients.sh
+      description: List or change a site's email recipients
+      requires_sudo: true
+      category: COMMS
