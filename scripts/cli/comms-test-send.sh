@@ -31,6 +31,6 @@ for i in $(seq 1 30); do
     st="$(vk XREVRANGE "$receipts" + - COUNT 50 | awk -v id="$id" '$0=="cid"{getline c} $0=="st"{getline s; if (c==id) {print s; exit}}')"
     [[ -n "$st" ]] && break; sleep 2
 done
-if [[ -z "${st:-}" ]]; then echo "NO RECEIPT after 60 s — COMMS did not process $id (geodineum comms status; journalctl -u geodineum-comms -n 50)"; exit 1; fi
+if [[ -z "${st:-}" ]]; then echo "NO RECEIPT after 60 s — COMMS did not process $id (geodineum status comms; journalctl -u geodineum-comms -n 50)"; exit 1; fi
 echo "receipt: $st  ($receipts, cid $id)"
 [[ "$st" == sent ]] && { echo "DELIVERED"; exit 0; } || { echo "NOT DELIVERED ($st) — journalctl -u geodineum-comms -n 50"; exit 1; }

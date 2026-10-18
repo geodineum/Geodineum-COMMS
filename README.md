@@ -94,7 +94,7 @@ $client->queueContactForm('Jane Doe', 'jane@example.com', 'Hello', 'Interested i
 # The daemon consumes, dispatches, and archives it. Inspect the result:
 systemctl status geodineum-comms
 geodineum-comms messages --site-id mysite --limit 5   # the archived message + its status
-geodineum comms status                                # daemon state + per-stream counts
+geodineum status comms                                # daemon state + per-stream counts
 ```
 
 To produce the message without PHP, `XADD` it directly. The braces are a literal

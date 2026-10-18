@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-    echo "Usage: geodineum comms status"
+    echo "Usage: geodineum status comms"
     echo ""
     echo "Show the COMMS daemon's service state and recent dispatch activity."
     exit 0
