@@ -3,7 +3,9 @@
 use std::sync::Arc;
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::channels::{ChannelConfig, ChannelRegistry, CommsMessage, RecipientConfig};
+use std::collections::HashMap;
+
+use crate::channels::{AddressedTo, ChannelConfig, ChannelRegistry, CommsMessage, RecipientConfig};
 use crate::error::{CommsError, DispatchError, Result};
 use crate::settings::{SiteSettings, SettingsStore};
 
@@ -117,8 +119,30 @@ impl MessageDispatcher {
             });
         }
 
+        // An addressed message goes by email to its one recipient, never to the
+        // site's configured recipients, and only if the site allows its type today.
+        let addressed = match &message.to {
+            Some(to) => match self.addressed_recipient(&settings, message, to).await? {
+                Ok(r) => Some(r),
+                Err(refusal) => {
+                    warn!(site_id = %site_id, message_type = %message.message_type, refusal, "Addressed message not sent");
+                    return Ok(DispatchResult {
+                        message_id: message.id.clone(),
+                        successful_channels: vec![],
+                        failed_channels: vec![],
+                        skipped_channels: vec![format!("email ({})", refusal)],
+                    });
+                }
+            },
+            None => None,
+        };
+
         // Determine which channels to use based on routing rules
-        let mut channels = self.determine_channels(&settings, message);
+        let mut channels = if addressed.is_some() {
+            vec!["email".to_string()]
+        } else {
+            self.determine_channels(&settings, message)
+        };
         if let Some(only) = only {
             if !only.is_empty() {
                 channels.retain(|c| only.contains(c));
@@ -142,7 +166,7 @@ impl MessageDispatcher {
                 result.skipped_channels.push(channel_name);
                 continue;
             }
-            match self.dispatch_to_channel(&channel_name, message, &settings).await {
+            match self.dispatch_to_channel(&channel_name, message, &settings, addressed.as_ref()).await {
                 Ok(()) => {
                     result.successful_channels.push(channel_name);
                 }
@@ -169,6 +193,12 @@ impl MessageDispatcher {
             }
         }
 
+        if addressed.is_some() && result.successful_channels.iter().any(|c| c == "email") {
+            if let Err(e) = self.settings_store.count_addressed(site_id).await {
+                warn!(site_id = %site_id, error = %e, "Could not count an addressed message against the daily cap");
+            }
+        }
+
         // Log result
         if result.is_success() {
             info!(
@@ -189,6 +219,27 @@ impl MessageDispatcher {
         }
 
         Ok(result)
+    }
+
+    /// The one recipient of an addressed message, or why it may not be sent (a terminal
+    /// skip: retrying cannot change the type, the address or today's count).
+    async fn addressed_recipient(
+        &self,
+        settings: &SiteSettings,
+        message: &CommsMessage,
+        to: &AddressedTo,
+    ) -> Result<std::result::Result<RecipientConfig, &'static str>> {
+        if !settings.addressed.types.iter().any(|t| t == &message.message_type) {
+            return Ok(Err("addressed_type_refused"));
+        }
+        let email = to.email.trim();
+        if email.parse::<lettre::Address>().is_err() {
+            return Ok(Err("addressed_invalid"));
+        }
+        if self.settings_store.addressed_sent_today(&message.site_id).await? >= settings.addressed.daily_cap {
+            return Ok(Err("addressed_cap"));
+        }
+        Ok(Ok(addressed_recipient_config(email, to.name.as_deref())))
     }
 
     /// Determine which channels to dispatch to based on settings and message type
@@ -229,6 +280,7 @@ impl MessageDispatcher {
         channel_name: &str,
         message: &CommsMessage,
         settings: &SiteSettings,
+        addressed: Option<&RecipientConfig>,
     ) -> Result<()> {
         if send_block(self.delivery_off, true, &message.environment) == Some("delivery_off") {
             warn!(
@@ -261,8 +313,11 @@ impl MessageDispatcher {
             });
         }
 
-        // Send to each recipient
-        let recipients = self.filter_recipients(&channel_config, message);
+        // Send to each recipient (an addressed message: only its own)
+        let recipients = match addressed {
+            Some(r) => vec![r.clone()],
+            None => self.filter_recipients(&channel_config, message),
+        };
 
         if recipients.is_empty() {
             // warn! + structured fields so journalctl makes "site has no
@@ -406,9 +461,36 @@ impl MessageDispatcher {
     }
 }
 
+/// A recipient entry for one addressed person: every type, every priority.
+pub fn addressed_recipient_config(email: &str, name: Option<&str>) -> RecipientConfig {
+    let mut address = HashMap::new();
+    address.insert("email".to_string(), email.to_string());
+    if let Some(n) = name.filter(|n| !n.is_empty()) {
+        address.insert("name".to_string(), n.to_string());
+    }
+    RecipientConfig { address, types: vec![], min_priority: 5 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_addressed_recipient_takes_every_type_and_priority() {
+        let r = addressed_recipient_config("ana@example.invalid", Some("Ana"));
+        assert!(r.should_receive("planning", 5));
+        assert_eq!(r.address.get("email").map(String::as_str), Some("ana@example.invalid"));
+        assert_eq!(r.address.get("name").map(String::as_str), Some("Ana"));
+        assert!(!addressed_recipient_config("b@example.invalid", Some("")).address.contains_key("name"));
+    }
+
+    #[test]
+    fn a_header_injection_is_not_an_address() {
+        for bad in ["a@b.c\r\nBcc: x@y.z", "a@b.c, x@y.z", "not an address", ""] {
+            assert!(bad.parse::<lettre::Address>().is_err(), "{:?} parsed", bad);
+        }
+        assert!("ana@example.invalid".parse::<lettre::Address>().is_ok());
+    }
 
     #[test]
     fn delivery_off_blocks_production() {

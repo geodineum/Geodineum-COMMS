@@ -47,6 +47,19 @@ pub struct CommsMessage {
 
     /// Dispatch status
     pub dispatch: Option<DispatchInfo>,
+
+    /// The one person this message is for, instead of the site's configured
+    /// recipients (email only; the type must be allowed by the site's `addressed`).
+    #[serde(default)]
+    pub to: Option<AddressedTo>,
+}
+
+/// One named recipient of an addressed message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AddressedTo {
+    pub email: String,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 fn default_priority() -> u8 {

@@ -33,6 +33,37 @@ pub struct SiteSettings {
     /// Retry configuration
     #[serde(default)]
     pub retry: RetrySettings,
+
+    /// Messages addressed to one person (`to`): which types may, and how many a day
+    #[serde(default)]
+    pub addressed: AddressedSettings,
+}
+
+/// A producer may name the one person a message goes to, only for these types, at most
+/// `daily_cap` a UTC day per site. Planning's invitations and offers are the first user.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddressedSettings {
+    #[serde(default = "default_addressed_types")]
+    pub types: Vec<String>,
+    #[serde(default = "default_addressed_cap")]
+    pub daily_cap: u64,
+}
+
+fn default_addressed_types() -> Vec<String> {
+    vec!["planning".to_string()]
+}
+
+fn default_addressed_cap() -> u64 {
+    200
+}
+
+impl Default for AddressedSettings {
+    fn default() -> Self {
+        Self {
+            types: default_addressed_types(),
+            daily_cap: default_addressed_cap(),
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -154,6 +185,7 @@ impl SiteSettings {
             rate_limits: HashMap::new(),
             filters: FilterSettings::default(),
             retry: RetrySettings::default(),
+            addressed: AddressedSettings::default(),
         }
     }
 }

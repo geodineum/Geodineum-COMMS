@@ -8,7 +8,7 @@ Notification daemon. gNode=Sun, ValKey=common backend. Stateless/state-aware: co
 
 ## ::ANCHOR
 
-- key types: `CommsMessage` · `MessageContent` · `SenderInfo` · `DispatchInfo`/`DispatchStatus{Pending|Processing|Sent|Failed|Spam}` · `SiteSettings` · `ChannelConfig` · `RecipientConfig` · `SendResult` · `DispatchResult`
+- key types: `CommsMessage` · `MessageContent` · `SenderInfo` · `DispatchInfo`/`DispatchStatus{Pending|Processing|Sent|Failed|Spam}` · `SiteSettings` · `AddressedSettings{types,daily_cap}` · `AddressedTo{email,name?}` · `ChannelConfig` · `RecipientConfig` · `SendResult` · `DispatchResult`
 - stream keys (braces LITERAL = Cluster hash-tag):
   - IN  `{site_id}:gnode:comms:{env}` — outbound dispatch queue (consume)
   - OUT `{site_id}:gnode:comms:inbound:{env}` — operator replies (produce)
@@ -48,7 +48,7 @@ systemd: Type=simple User=geodineum-comms After=valkey-gnode+gnode-daemon, Resta
 
 ## ::IO
 
-IN ← `{site_id}:gnode:comms:{env}` fields: scalar `id`/`type`/`timestamp`/`site_id`/`environment`/`priority` + JSON-string `sender`/`content`/`metadata`/`dispatch`. site_id from KEY not body. env resolution: msg.environment → stream-key-suffix → "unknown".
+IN ← `{site_id}:gnode:comms:{env}` fields: scalar `id`/`type`/`timestamp`/`site_id`/`environment`/`priority` + JSON-string `sender`/`content`/`metadata`/`dispatch`/`to`. `to`={email,name?} = ADDRESSED: email-only to that ONE mailbox, never site recipients; gate = type∈settings.addressed.types (default [planning]) ∧ lettre-parses-one-mailbox (CR/LF/list refused) ∧ today<daily_cap (default 200, `{site}:comms:stats:addressed:YYYYMMDD`, incr on real send only) → else terminal skip `addressed_type_refused|addressed_invalid|addressed_cap`; DTAP gate unchanged. site_id from KEY not body. env resolution: msg.environment → stream-key-suffix → "unknown".
 IN ← `{site_id}:comms:config` (JSON SiteSettings) · `gnode:site:*:meta` (discovery) · SMTP creds (config) · Twilio creds (config) · `TELEGRAM_BOT_TOKEN` (ENV, not config).
 OUT → channels: lettre SMTP | Telegram sendMessage/answerCallbackQuery/editMessageText | Twilio SendSMS. Sentinel channels `record`/`log`/`none` = record-only (skipped, no send, still on stream); empty `dispatch.channels` = ALL enabled (never emit empty).
 OUT → `{site_id}:gnode:comms:inbound:{env}` (operator reply: command/context_id/component/operator_id/ts) routed via `metadata.callback_stream`.

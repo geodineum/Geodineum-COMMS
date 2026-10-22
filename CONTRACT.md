@@ -185,6 +185,7 @@ objects).
 | `content` | rec | JSON string | `{"subject","body","attachments":{}}`. **Has a fallback**: if absent/unparseable, the daemon synthesizes content from flat `subject` / `body` (or `message`) fields (Tera templates are then skipped). (See §7.) |
 | `metadata` | opt | JSON string | Free-form object, e.g. `{"form_type","source_url","callback_stream","reply_options"}`. |
 | `dispatch` | opt | JSON string | Producer-minimal: every field is defaulted, so `{"channels":["email"]}` or even `{}` is valid — `status`/`attempts` are COMMS bookkeeping, never producer-supplied (a required `status` once made producer JSON fail deserialization and silently drop the whole block). `channels` overrides site routing when present and non-empty; **never send an empty `channels` array** (falls through to all enabled channels). `reply_markup` (optional JSON) passes through verbatim to Telegram as an inline keyboard and is ignored by other channels — how a notification becomes answerable from a phone. Sentinel channel (below) records without sending. |
+| `to` | opt | JSON string | `{"email","name"?}` — the ONE person this message is for. Delivered by **email only**, to that address only, never to the site's configured recipients. Refused (archived as skipped, not retried) unless the site allows the `type` in `addressed.types` (default `["planning"]`), the address parses as one mailbox (a CR/LF or a second address is refused), and the site has sent fewer than `addressed.daily_cap` (default 200) today (UTC, counter `{site_id}:comms:stats:addressed:YYYYMMDD`, counted only on a real send). The DTAP gate still applies. Skip markers: `addressed_type_refused`, `addressed_invalid`, `addressed_cap`. |
 
 Channels: `email`, `telegram`, `sms`. Sentinel (record-only, no outbound send —
 message still lands on the stream and archives as skipped): `record`, `log`,
@@ -234,7 +235,8 @@ A ValKey **string** value holding a single JSON-encoded `SiteSettings` object
       rate_limits { channel: RateLimit },
       filters { spam_enabled, spam_action, keywords_blocklist,
                 ip_blocklist, email_blocklist },
-      retry { max_attempts, base_delay_secs, max_delay_secs } }
+      retry { max_attempts, base_delay_secs, max_delay_secs },
+      addressed { types [str] (default ["planning"]), daily_cap (int, default 200) } }
 
     ChannelConfig { enabled, config {},
       recipients [{ address {key:val}, types [str], min_priority (int, default 5) }],
@@ -260,14 +262,16 @@ A ValKey **string** value holding a single JSON-encoded `SiteSettings` object
     CommsMessage { id, message_type, timestamp, site_id, priority: u8,
                    sender: Option<SenderInfo>, content: MessageContent,
                    metadata: HashMap<String,Value>, environment: String,
-                   dispatch: Option<DispatchInfo> }
+                   dispatch: Option<DispatchInfo>, to: Option<AddressedTo> }
+    AddressedTo { email, name? }
     SenderInfo { name?, email?, phone?, user_agent?, ip? }
     MessageContent { subject?, body?, attachments: HashMap<String,Value> }
     DispatchInfo { channels: Vec<String>, status: DispatchStatus,
                    attempts: u32, last_attempt?, next_retry? }
     DispatchStatus = Pending | Processing | Sent | Failed | Spam
     SiteSettings { site_id, enabled, channels: ChannelSettings,
-                   routing_rules, rate_limits, filters, retry }
+                   routing_rules, rate_limits, filters, retry, addressed: AddressedSettings }
+    AddressedSettings { types: Vec<String>, daily_cap: u64 }
     ChannelConfig { enabled, config, recipients: Vec<RecipientConfig>, rate_limit? }
     RecipientConfig { address: HashMap<String,String>, types: Vec<String>,
                       min_priority: u8 }

@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows Keep
 
 ## [0.2.0] — unreleased
 
+### Added
+
+- Addressed messages: an optional `to` names the one person a message is for (email only), for the types a site allows (default `planning`), under a per-site daily cap.
+
 ### Breaking: the one topology
 
 - Heartbeat key carries the node segment, in the constellation's family.

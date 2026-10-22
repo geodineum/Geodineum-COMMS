@@ -28,6 +28,27 @@ impl SettingsStore {
         format!("{{{}}}:comms:config", site_id)
     }
 
+    /// Today's (UTC) counter of addressed messages sent for a site.
+    fn addressed_key(site_id: &str) -> String {
+        format!("{{{}}}:comms:stats:addressed:{}", site_id, chrono::Utc::now().format("%Y%m%d"))
+    }
+
+    /// How many addressed messages this site has sent today.
+    pub async fn addressed_sent_today(&self, site_id: &str) -> Result<u64> {
+        let mut conn = self.conn.clone();
+        let n: Option<u64> = conn.get(Self::addressed_key(site_id)).await.map_err(CommsError::ValKey)?;
+        Ok(n.unwrap_or(0))
+    }
+
+    /// Count one addressed message sent; the counter lives two days.
+    pub async fn count_addressed(&self, site_id: &str) -> Result<()> {
+        let key = Self::addressed_key(site_id);
+        let mut conn = self.conn.clone();
+        conn.incr::<_, _, ()>(&key, 1).await.map_err(CommsError::ValKey)?;
+        conn.expire::<_, ()>(&key, 172_800).await.map_err(CommsError::ValKey)?;
+        Ok(())
+    }
+
     /// Get settings for a site
     pub async fn get_settings(&self, site_id: &str) -> Result<Option<SiteSettings>> {
         // Check cache first

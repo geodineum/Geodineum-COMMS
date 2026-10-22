@@ -9,7 +9,7 @@ pub mod sms;
 pub mod telegram;
 
 pub use channel::{
-    ChannelConfig, CommsMessage, DispatchInfo, DispatchStatus, MessageContent, NotificationChannel,
+    AddressedTo, ChannelConfig, CommsMessage, DispatchInfo, DispatchStatus, MessageContent, NotificationChannel,
     RateLimit, RecipientConfig, RenderedContent, SendResult, SenderInfo,
 };
 pub use email::EmailChannel;

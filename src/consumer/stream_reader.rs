@@ -342,6 +342,9 @@ impl StreamConsumer {
             .get("dispatch")
             .and_then(|s| parse_field_safely("dispatch", s));
 
+        // An addressed message names its one recipient (JSON {email, name}).
+        let to = fields.get("to").and_then(|s| parse_field_safely("to", s));
+
         // Resolve the DTAP environment for side-effect gating (crate::dtap).
         // A producer-stamped `environment` field is authoritative — it catches
         // a non-prod message mis-XADDed onto the production stream. Absent that,
@@ -367,6 +370,7 @@ impl StreamConsumer {
             metadata,
             environment,
             dispatch,
+            to,
         })
     }
 

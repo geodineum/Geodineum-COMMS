@@ -3,5 +3,5 @@
 mod models;
 mod store;
 
-pub use models::{ChannelSettings, FilterSettings, RetrySettings, RoutingRule, SiteSettings, SpamAction};
+pub use models::{AddressedSettings, ChannelSettings, FilterSettings, RetrySettings, RoutingRule, SiteSettings, SpamAction};
 pub use store::SettingsStore;
