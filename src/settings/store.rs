@@ -49,6 +49,12 @@ impl SettingsStore {
         Ok(())
     }
 
+    /// The chat a site's web subscriber linked (inbound::web_link::chat_for).
+    pub async fn linked_chat(&self, link_site: &str, site: &str, consumer: &str) -> Option<String> {
+        let mut conn = self.conn.clone();
+        crate::inbound::web_link::chat_for(&mut conn, link_site, site, consumer).await
+    }
+
     /// Get settings for a site
     pub async fn get_settings(&self, site_id: &str) -> Result<Option<SiteSettings>> {
         // Check cache first

@@ -85,7 +85,7 @@ fn message(site: &str, kind: &str, to: Option<&str>, env: &str) -> CommsMessage 
         metadata: HashMap::new(),
         environment: env.to_string(),
         dispatch: None,
-        to: to.map(|e| AddressedTo { email: e.to_string(), name: Some("Ana".into()) }),
+        to: to.map(|e| AddressedTo { email: e.to_string(), name: Some("Ana".into()), telegram: None }),
     }
 }
 

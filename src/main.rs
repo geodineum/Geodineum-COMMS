@@ -285,7 +285,8 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
         settings_store.clone(),
         cli.allow_nonprod_send,
         cli.delivery == geodineum_comms::config::Delivery::Off,
-    );
+    )
+    .with_link_site(config.inbound.as_ref().and_then(|i| i.site_id.clone()).unwrap_or_else(|| "geodine".to_string()));
 
     // Create spam filter: built-in blocklists extended by the YAML config
     // (spam_filter.keywords_blocklist / ip_blocklist were previously
@@ -1100,6 +1101,28 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
                             continue;
                         }
 
+                        // A web subscriber's Telegram (the Geodine window): /link, /unlink, and their
+                        // messages continue the web conversation through the site's own relay.
+                        if fields.get("chat_type").map(|s| s.as_str()).unwrap_or("private") == "private"
+                            && fields.get("is_callback").map(|s| s.as_str()) != Some("true")
+                            && web_subscriber(&mut inbound_conn, &WebCtx {
+                                link_site: &inbound_site_id,
+                                environment: &cli.environment,
+                                node_id: &node_id,
+                                bot_token: inbound_bot_token.as_deref(),
+                                admin_ids: config.inbound.as_ref().and_then(|i| i.admin_ids.as_ref()),
+                                timeout_secs: inference_timeout,
+                            }, &text, &chat_id, &operator_id, &operator_name, conn.clone()).await
+                        {
+                            let _: redis::RedisResult<()> = redis::cmd("XACK")
+                                .arg(&inbound_stream_key)
+                                .arg("geodineum_comms_inbound")
+                                .arg(&entry_id)
+                                .query_async(&mut inbound_conn)
+                                .await;
+                            continue;
+                        }
+
                         // Get or create conversation state
                         let state = conv_state
                             .get_or_create(&chat_id, &inbound_site_id, &operator_id, &operator_name)
@@ -1207,6 +1230,7 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
                                                         request_id: request_id.clone(),
                                                         pipeline: pipeline.clone(),
                                                         timeout_secs: inference_timeout,
+                                                        from_entry: None,
                                                     },
                                                 );
                                             }
@@ -1796,6 +1820,106 @@ fn parse_xreadgroup_response(
 }
 
 /// Send a text reply directly to a Telegram chat (bypasses outbound pipeline)
+struct WebCtx<'a> {
+    link_site: &'a str,
+    environment: &'a str,
+    node_id: &'a str,
+    bot_token: Option<&'a str>,
+    admin_ids: Option<&'a Vec<i64>>,
+    timeout_secs: u64,
+}
+
+/// A private message from a web subscriber's Telegram, handled here and true; false leaves it to the
+/// operator's router (an admin's own commands, an admin who never linked). A non-admin never reaches
+/// the router: the receiver let them through only for /link, /unlink or a link it already holds.
+async fn web_subscriber(
+    conn: &mut redis::aio::MultiplexedConnection,
+    ctx: &WebCtx<'_>,
+    text: &str,
+    chat_id: &str,
+    operator_id: &str,
+    operator_name: &str,
+    poller_conn: redis::aio::MultiplexedConnection,
+) -> bool {
+    use geodineum_comms::inbound::web_link::{self, LinkOutcome};
+    let say = |t: String| async move {
+        if let Some(token) = ctx.bot_token {
+            let _ = send_telegram_reply(token, chat_id, &t).await;
+        }
+    };
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    if let Some((site, code)) = web_link::parse_link(text) {
+        match web_link::link(conn, ctx.link_site, &site, &code, operator_id, chat_id, operator_name, now_ms).await {
+            LinkOutcome::Linked { lane, .. } => {
+                info!(site = %site, "Telegram linked to a web subscriber");
+                say(format!("Linked to your Geodine window. Messages here continue the <code>{}</code> conversation; /unlink ends it.",
+                    geodineum_comms::inbound::html_escape_telegram(&lane))).await;
+            }
+            LinkOutcome::Expired => say("That code has expired or was already used. Make a new one in the window.".into()).await,
+        }
+        return true;
+    }
+    if web_link::is_unlink(text) {
+        let was = web_link::unlink(conn, ctx.link_site, operator_id).await;
+        say(if was { "Unlinked. This chat no longer continues your Geodine window." } else { "This chat is not linked to a Geodine window." }.into()).await;
+        return true;
+    }
+    let is_admin = match ctx.admin_ids {
+        None => true,
+        Some(ids) => ids.contains(&operator_id.parse::<i64>().unwrap_or(0)),
+    };
+    let command = text.starts_with('/');
+    if command && is_admin {
+        return false;
+    }
+    match web_link::resolve(conn, ctx.link_site, operator_id).await {
+        Some(Ok((web, route))) if !command => {
+            if !web_link::within_rate(conn, ctx.link_site, operator_id, now_ms).await {
+                say("That is a lot of messages this hour; this one was not sent. Try again later.".into()).await;
+                return true;
+            }
+            let request_id = format!("tg-{}-{}", operator_id, now_ms);
+            let stream = web_link::site_stream(&web.site, ctx.environment);
+            let fields = web_link::command_fields(&web.site, ctx.node_id, &route, text, &request_id, now_ms);
+            let entry: redis::RedisResult<String> = redis::cmd("XADD").arg(&stream).arg("*").arg(&fields).query_async(conn).await;
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    warn!(error = %e, site = %web.site, "Could not put a linked message on the site's stream");
+                    say("Your window's site could not take the message just now; try again in a moment.".into()).await;
+                    return true;
+                }
+            };
+            if let Some(token) = ctx.bot_token {
+                if let Ok(processing_msg_id) = send_processing_indicator(token, chat_id, &route.pipeline).await {
+                    if processing_msg_id > 0 {
+                        spawn_response_poller(poller_conn, PollRequest {
+                            bot_token: token.to_string(),
+                            chat_id: chat_id.to_string(),
+                            processing_msg_id,
+                            unified_stream: stream,
+                            request_id,
+                            pipeline: route.pipeline.clone(),
+                            timeout_secs: ctx.timeout_secs,
+                            from_entry: Some(entry),
+                        });
+                    }
+                }
+            }
+            true
+        }
+        Some(Ok(_)) => {
+            say("Commands are for the operator. Send a question and it continues your window's conversation.".into()).await;
+            true
+        }
+        Some(Err(_)) => {
+            say("This chat is no longer linked to a Geodine window. Make a new code there to link it again.".into()).await;
+            true
+        }
+        None => !is_admin,
+    }
+}
+
 async fn send_telegram_reply(bot_token: &str, chat_id: &str, text: &str) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
     let url = format!("https://api.telegram.org/bot{}/sendMessage", bot_token);

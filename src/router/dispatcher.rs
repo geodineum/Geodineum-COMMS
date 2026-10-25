@@ -46,6 +46,8 @@ pub struct MessageDispatcher {
     allow_nonprod_send: bool,
     /// Master switch: when true no channel `send` is ever reached.
     delivery_off: bool,
+    /// The site holding the bot and the web-subscriber links (COMMS_INBOUND_SITE).
+    link_site: Option<String>,
 }
 
 /// Skip markers that mean "intentionally not sent": acknowledged and archived as
@@ -75,7 +77,13 @@ impl MessageDispatcher {
             settings_store,
             allow_nonprod_send,
             delivery_off,
+            link_site: None,
         }
+    }
+
+    pub fn with_link_site(mut self, site: impl Into<String>) -> Self {
+        self.link_site = Some(site.into());
+        self
     }
 
     /// Dispatch a message to all configured channels
@@ -121,7 +129,24 @@ impl MessageDispatcher {
 
         // An addressed message goes by email to its one recipient, never to the
         // site's configured recipients, and only if the site allows its type today.
+        // One for a web subscriber goes by Telegram, with the bot site's channel.
+        let mut linked: Option<SiteSettings> = None;
         let addressed = match &message.to {
+            Some(to) if to.telegram.is_some() => match self.linked_recipient(&settings, message, to.telegram.as_deref().unwrap_or_default()).await? {
+                Ok((r, bot)) => {
+                    linked = Some(bot);
+                    Some(r)
+                }
+                Err(refusal) => {
+                    warn!(site_id = %site_id, message_type = %message.message_type, refusal, "Addressed Telegram message not sent");
+                    return Ok(DispatchResult {
+                        message_id: message.id.clone(),
+                        successful_channels: vec![],
+                        failed_channels: vec![],
+                        skipped_channels: vec![format!("telegram ({})", refusal)],
+                    });
+                }
+            },
             Some(to) => match self.addressed_recipient(&settings, message, to).await? {
                 Ok(r) => Some(r),
                 Err(refusal) => {
@@ -138,7 +163,9 @@ impl MessageDispatcher {
         };
 
         // Determine which channels to use based on routing rules
-        let mut channels = if addressed.is_some() {
+        let mut channels = if linked.is_some() {
+            vec!["telegram".to_string()]
+        } else if addressed.is_some() {
             vec!["email".to_string()]
         } else {
             self.determine_channels(&settings, message)
@@ -166,7 +193,7 @@ impl MessageDispatcher {
                 result.skipped_channels.push(channel_name);
                 continue;
             }
-            match self.dispatch_to_channel(&channel_name, message, &settings, addressed.as_ref()).await {
+            match self.dispatch_to_channel(&channel_name, message, linked.as_ref().unwrap_or(&settings), addressed.as_ref()).await {
                 Ok(()) => {
                     result.successful_channels.push(channel_name);
                 }
@@ -193,7 +220,7 @@ impl MessageDispatcher {
             }
         }
 
-        if addressed.is_some() && result.successful_channels.iter().any(|c| c == "email") {
+        if addressed.is_some() && result.successful_channels.iter().any(|c| c == "email" || c == "telegram") {
             if let Err(e) = self.settings_store.count_addressed(site_id).await {
                 warn!(site_id = %site_id, error = %e, "Could not count an addressed message against the daily cap");
             }
@@ -240,6 +267,32 @@ impl MessageDispatcher {
             return Ok(Err("addressed_cap"));
         }
         Ok(Ok(addressed_recipient_config(email, to.name.as_deref())))
+    }
+
+    /// The linked chat of a site's web subscriber and the bot site's settings, or why not: the type
+    /// must be one the site addresses, within today's cap, and COMMS's own link record must name this
+    /// site and consumer (the site's route alone is not trusted).
+    async fn linked_recipient(
+        &self,
+        settings: &SiteSettings,
+        message: &CommsMessage,
+        consumer: &str,
+    ) -> Result<std::result::Result<(RecipientConfig, SiteSettings), &'static str>> {
+        if !settings.addressed.types.iter().any(|t| t == &message.message_type) {
+            return Ok(Err("addressed_type_refused"));
+        }
+        if self.settings_store.addressed_sent_today(&message.site_id).await? >= settings.addressed.daily_cap {
+            return Ok(Err("addressed_cap"));
+        }
+        let Some(link_site) = self.link_site.as_deref() else { return Ok(Err("no_bot")) };
+        let Some(chat) = self.settings_store.linked_chat(link_site, &message.site_id, consumer).await else { return Ok(Err("not_linked")) };
+        let Some(bot) = self.settings_store.get_settings(link_site).await? else { return Ok(Err("no_bot")) };
+        if !bot.channels.telegram.as_ref().is_some_and(|c| c.enabled) {
+            return Ok(Err("no_bot"));
+        }
+        let mut address = HashMap::new();
+        address.insert("chat_id".to_string(), chat);
+        Ok(Ok((RecipientConfig { address, types: vec![], min_priority: 5 }, bot)))
     }
 
     /// Determine which channels to dispatch to based on settings and message type

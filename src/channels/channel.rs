@@ -57,9 +57,14 @@ pub struct CommsMessage {
 /// One named recipient of an addressed message.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AddressedTo {
+    #[serde(default)]
     pub email: String,
     #[serde(default)]
     pub name: Option<String>,
+    /// A web subscriber (consumer id) of the sending site: delivered by Telegram to the account
+    /// linked to that consumer (inbound::web_link), never to an address the site names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telegram: Option<String>,
 }
 
 fn default_priority() -> u8 {

@@ -11,6 +11,7 @@ pub mod schema_registry;
 pub mod telegram_receiver;
 pub mod inference_chain;
 pub mod workflow_dispatch;
+pub mod web_link;
 
 pub use command_router::{CommandAction, CommandRouter, ParsedCommand};
 pub use conversation_state::{ConvState, ContextResolution, ConversationState};

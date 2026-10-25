@@ -30,6 +30,9 @@ pub struct PollRequest {
     pub pipeline: String,
     /// Maximum time to wait for response (seconds)
     pub timeout_secs: u64,
+    /// The command's own entry: the reply is read forward from it (a busy stream pushes a reply
+    /// out of the newest twenty). None reads the newest twenty.
+    pub from_entry: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -114,7 +117,7 @@ pub fn spawn_response_poller(mut conn: MultiplexedConnection, req: PollRequest) 
                 }
                 // Poll for response
                 _ = tokio::time::sleep(poll_interval) => {
-                    match poll_response(&mut conn, &req.unified_stream, &req.request_id).await {
+                    match poll_response(&mut conn, &req.unified_stream, &req.request_id, req.from_entry.as_deref()).await {
                         Ok(Some(response)) => {
                             let (raw, is_error, metrics) = extract_response(&response);
 
@@ -236,15 +239,12 @@ async fn poll_response(
     conn: &mut MultiplexedConnection,
     stream: &str,
     request_id: &str,
+    from_entry: Option<&str>,
 ) -> std::result::Result<Option<HashMap<String, String>>, redis::RedisError> {
-    let raw: redis::Value = redis::cmd("XREVRANGE")
-        .arg(stream)
-        .arg("+")
-        .arg("-")
-        .arg("COUNT")
-        .arg(20)
-        .query_async(conn)
-        .await?;
+    let raw: redis::Value = match from_entry {
+        Some(from) => redis::cmd("XRANGE").arg(stream).arg(from).arg("+").arg("COUNT").arg(2000).query_async(conn).await?,
+        None => redis::cmd("XREVRANGE").arg(stream).arg("+").arg("-").arg("COUNT").arg(20).query_async(conn).await?,
+    };
 
     let entries = parse_xrange_response(&raw);
 

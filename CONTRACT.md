@@ -55,6 +55,33 @@ per 60 s) names the service and the fix. With no default configured the mail
 is sent unmodified and the warning says so. Mail never silently stops; it
 also never silently dies at a recipient's DMARC because we signed nothing.
 
+### 1.2a Telegram linked to a web subscriber (the Geodine window)
+
+A site's web subscriber can link their Telegram account to the bot; from then on their messages
+continue their web conversation. The site writes a one-time code and a route in its own namespace;
+the person sends `/start <site>-<CODE>` (or `/link <site>-<CODE>`) to the bot. COMMS checks the code,
+records the account in the bot site's namespace (the authority; only COMMS writes it), puts the
+account on the route and answers the code:
+
+    {site}:gnode:comms:link:<CODE>      the site's code {consumer, expires_ms}; answered {consumer, state: linked, operator, chat, name, at_ms}, 1 day
+    {site}:gnode:comms:tg:<consumer>    the site's route {consumer, lane, pipeline, session_id, system?, system_mode?, system_name?}; COMMS adds operator, chat
+    {bot site}:gnode:comms:web:<operator>   COMMS's record {site, consumer, chat, at_ms}
+
+A linked person's private message becomes a relayed `direct` on the SITE's own command stream,
+`{site}:gnode:unified:{env}`: `t c c direct p {pipeline, prompt (≤ 8000), consumer, session_id, system?}
+id tg-<operator>-<ms> ss <site> sn <node> ts <ms> _rt geodine via telegram cs <consumer> lane <lane>`.
+The gNode daemon checks the site's reach, as for anything the site sends; the reply comes home to the
+site, and COMMS reads it forward from the command's entry and answers in Telegram. COMMS never sends
+for a site what the site could not send itself. A route that is gone, or names another account, ends
+the link (the chat is told, the record deleted); `/unlink` deletes both. Linking an account again ends
+its previous link. A linked account may send 60 messages an hour (`{bot site}:gnode:comms:rate:<operator>:<hour>`);
+beyond that the bot says so and relays nothing. `src/inbound/web_link.rs`, `src/main.rs` (`web_subscriber`)
+
+**Who reaches the inbound loop.** The receiver passes operator admins (`COMMS_ADMIN_IDS`) as before,
+and in a private chat anyone else only for `/start <site>-<CODE>`, `/link …`, `/unlink`, or once
+linked; callbacks and groups stay admin-only. A linked person's commands reach no router; an admin
+who linked their own account keeps their commands, and their free text continues their window.
+
 ### 1.3 Workflow dispatch (stream producer)
 
 - Writes structured workflow requests to `{site_id}:gnode:comms:workflows:{env}`
@@ -185,7 +212,7 @@ objects).
 | `content` | rec | JSON string | `{"subject","body","attachments":{}}`. **Has a fallback**: if absent/unparseable, the daemon synthesizes content from flat `subject` / `body` (or `message`) fields (Tera templates are then skipped). (See §7.) |
 | `metadata` | opt | JSON string | Free-form object, e.g. `{"form_type","source_url","callback_stream","reply_options"}`. |
 | `dispatch` | opt | JSON string | Producer-minimal: every field is defaulted, so `{"channels":["email"]}` or even `{}` is valid — `status`/`attempts` are COMMS bookkeeping, never producer-supplied (a required `status` once made producer JSON fail deserialization and silently drop the whole block). `channels` overrides site routing when present and non-empty; **never send an empty `channels` array** (falls through to all enabled channels). `reply_markup` (optional JSON) passes through verbatim to Telegram as an inline keyboard and is ignored by other channels — how a notification becomes answerable from a phone. Sentinel channel (below) records without sending. |
-| `to` | opt | JSON string | `{"email","name"?}` — the ONE person this message is for. Delivered by **email only**, to that address only, never to the site's configured recipients. Refused (archived as skipped, not retried) unless the site allows the `type` in `addressed.types` (default `["planning"]`), the address parses as one mailbox (a CR/LF or a second address is refused), and the site has sent fewer than `addressed.daily_cap` (default 200) today (UTC, counter `{site_id}:comms:stats:addressed:YYYYMMDD`, counted only on a real send). The DTAP gate still applies. Skip markers: `addressed_type_refused`, `addressed_invalid`, `addressed_cap`. |
+| `to` | opt | JSON string | `{"email","name"?}` or `{"telegram": "<consumer>"}` — the ONE person this message is for. A `telegram` recipient is a web subscriber of the sending site: delivered by **Telegram only**, with the bot site's channel (`COMMS_INBOUND_SITE`), to the chat COMMS's own link record (§1.2a) gives for that site and consumer, never to a chat the site names; same type gate and daily cap as email; skip markers `not_linked`, `no_bot`. An `email` recipient is delivered by **email only**, to that address only, never to the site's configured recipients. Refused (archived as skipped, not retried) unless the site allows the `type` in `addressed.types` (default `["planning"]`), the address parses as one mailbox (a CR/LF or a second address is refused), and the site has sent fewer than `addressed.daily_cap` (default 200) today (UTC, counter `{site_id}:comms:stats:addressed:YYYYMMDD`, counted only on a real send). The DTAP gate still applies. Skip markers: `addressed_type_refused`, `addressed_invalid`, `addressed_cap`. |
 
 Channels: `email`, `telegram`, `sms`. Sentinel (record-only, no outbound send —
 message still lands on the stream and archives as skipped): `record`, `log`,
@@ -263,7 +290,7 @@ A ValKey **string** value holding a single JSON-encoded `SiteSettings` object
                    sender: Option<SenderInfo>, content: MessageContent,
                    metadata: HashMap<String,Value>, environment: String,
                    dispatch: Option<DispatchInfo>, to: Option<AddressedTo> }
-    AddressedTo { email, name? }
+    AddressedTo { email (default ""), name?, telegram? }
     SenderInfo { name?, email?, phone?, user_agent?, ip? }
     MessageContent { subject?, body?, attachments: HashMap<String,Value> }
     DispatchInfo { channels: Vec<String>, status: DispatchStatus,

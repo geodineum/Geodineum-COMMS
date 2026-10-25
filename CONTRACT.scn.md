@@ -12,6 +12,8 @@ Notification daemon. gNode=Sun, ValKey=common backend. Stateless/state-aware: co
 - stream keys (braces LITERAL = Cluster hash-tag):
   - IN  `{site_id}:gnode:comms:{env}` — outbound dispatch queue (consume)
   - OUT `{site_id}:gnode:comms:inbound:{env}` — operator replies (produce)
+  - OUT `{site}:gnode:unified:{env}` — a linked web subscriber's Telegram message as the site's own relayed `direct` (`_rt geodine`, `via telegram`)
+  - KV `{site}:gnode:comms:link:<CODE>` (site's code → COMMS answer) · `{site}:gnode:comms:tg:<consumer>` (site's route, COMMS adds operator/chat) · `{bot}:gnode:comms:web:<operator>` (COMMS's record = authority)
   - OUT `{site_id}:gnode:comms:workflows:{env}` — workflow requests (produce)
   - CFG `{site_id}:comms:config` — ValKey STRING (single JSON `SiteSettings`, NOT a hash)
   - DISCOVER `gnode:site:{site_id}:meta` — fallback site registry scan
@@ -41,6 +43,7 @@ Rust + tokio 1.35 async (full). clap 4.4 CLI. Modules:
 - `persistence/` — `MessageStore` r2d2 SQLite pool, per-site isolation
 - `settings/` — `SettingsStore` ValKey-backed + in-mem RwLock cache
 - `inbound/` — `TelegramReceiver` long-poll getUpdates + CommandRouter + ConversationState + SPR engine + `WorkflowDispatcher` + response_poller [BETA, undocumented schema]
+- `inbound/web_link.rs` — a web subscriber's Telegram: `/start <site>-<CODE>`|`/link` → record + route + answer; message → site-stream `direct` (daemon checks reach); `/unlink`; gate: non-admin passes receiver only private + (link|unlink|linked); linked non-admin commands → no router; 60 msgs/h per account (`{bot}:gnode:comms:rate:<op>:<hour>`)
 - `dtap/` — is_production + environment_from_stream_key
 - `templates/` — Tera per-channel · `cli/` — output formatters
 KEY design: durable-write-fence (`XACK` ONLY after SQLite ok → crash-safe via group rebalance) · fail-safe DTAP (unknown/missing env → non-prod → no real send) · per-site `DispatchRateLimiter` sliding-window 100/60s, MAX_TRACKED_SITES=1024 hard-cap (anti-OOM) · brace-literal hash-tags for Cluster co-location · exp backoff 30s→1h · post-ACK channel retry (XRANGE re-fetch from stream history, failed-channels-only re-dispatch, success→archive `sent`, trimmed→abandon+warn) · periodic site re-discovery (discovery_interval_secs=60 default, 0=startup-only).
@@ -48,7 +51,7 @@ systemd: Type=simple User=geodineum-comms After=valkey-gnode+gnode-daemon, Resta
 
 ## ::IO
 
-IN ← `{site_id}:gnode:comms:{env}` fields: scalar `id`/`type`/`timestamp`/`site_id`/`environment`/`priority` + JSON-string `sender`/`content`/`metadata`/`dispatch`/`to`. `to`={email,name?} = ADDRESSED: email-only to that ONE mailbox, never site recipients; gate = type∈settings.addressed.types (default [planning]) ∧ lettre-parses-one-mailbox (CR/LF/list refused) ∧ today<daily_cap (default 200, `{site}:comms:stats:addressed:YYYYMMDD`, incr on real send only) → else terminal skip `addressed_type_refused|addressed_invalid|addressed_cap`; DTAP gate unchanged. site_id from KEY not body. env resolution: msg.environment → stream-key-suffix → "unknown".
+IN ← `{site_id}:gnode:comms:{env}` fields: scalar `id`/`type`/`timestamp`/`site_id`/`environment`/`priority` + JSON-string `sender`/`content`/`metadata`/`dispatch`/`to`. `to`={telegram:<consumer>} = ADDRESSED-LINKED: telegram-only, bot site's channel, chat ONLY from COMMS's own `web:` record matching (site, consumer), never a site-named chat; same type gate+cap; skips `not_linked|no_bot`. `to`={email,name?} = ADDRESSED: email-only to that ONE mailbox, never site recipients; gate = type∈settings.addressed.types (default [planning]) ∧ lettre-parses-one-mailbox (CR/LF/list refused) ∧ today<daily_cap (default 200, `{site}:comms:stats:addressed:YYYYMMDD`, incr on real send only) → else terminal skip `addressed_type_refused|addressed_invalid|addressed_cap`; DTAP gate unchanged. site_id from KEY not body. env resolution: msg.environment → stream-key-suffix → "unknown".
 IN ← `{site_id}:comms:config` (JSON SiteSettings) · `gnode:site:*:meta` (discovery) · SMTP creds (config) · Twilio creds (config) · `TELEGRAM_BOT_TOKEN` (ENV, not config).
 OUT → channels: lettre SMTP | Telegram sendMessage/answerCallbackQuery/editMessageText | Twilio SendSMS. Sentinel channels `record`/`log`/`none` = record-only (skipped, no send, still on stream); empty `dispatch.channels` = ALL enabled (never emit empty).
 OUT → `{site_id}:gnode:comms:inbound:{env}` (operator reply: command/context_id/component/operator_id/ts) routed via `metadata.callback_stream`.
