@@ -223,26 +223,87 @@ impl TemplateRenderer {
     }
 
     // Helper: strip HTML tags (basic implementation)
-    fn strip_html(html: &str) -> String {
+    /// The text/plain part of an HTML mail: no head or style contents, a line break for <br> and
+    /// at the end of each block, entities decoded (Tera escapes "/" in links as &#x2F;).
+    pub fn strip_html(html: &str) -> String {
+        let lower = html.to_ascii_lowercase();
         let mut result = String::new();
-        let mut in_tag = false;
+        let mut i = 0;
+        let bytes = html.as_bytes();
+        while i < bytes.len() {
+            if bytes[i] == b'<' {
+                let end = match html[i..].find('>') {
+                    Some(e) => i + e,
+                    None => break,
+                };
+                let tag = &lower[i + 1..end];
+                let name: String = tag.trim_start_matches('/').chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+                if !tag.starts_with('/') && (name == "head" || name == "style" || name == "script" || name == "title") {
+                    let close = format!("</{}", name);
+                    i = match lower[end..].find(&close) {
+                        Some(c) => end + c + lower[end + c..].find('>').map(|g| g + 1).unwrap_or(0),
+                        None => bytes.len(),
+                    };
+                    continue;
+                }
+                if name == "br" || (tag.starts_with('/') && matches!(name.as_str(), "p" | "div" | "tr" | "h1" | "h2" | "h3" | "li" | "table")) {
+                    result.push('\n');
+                }
+                i = end + 1;
+                continue;
+            }
+            let ch = html[i..].chars().next().unwrap_or(' ');
+            result.push(ch);
+            i += ch.len_utf8();
+        }
+        // Trimmed lines, at most one empty line in a row.
+        let mut out: Vec<&str> = Vec::new();
+        let decoded = Self::decode_entities(&result);
+        for line in decoded.lines().map(str::trim) {
+            if line.is_empty() && out.last().map_or(true, |l| l.is_empty()) {
+                continue;
+            }
+            out.push(line);
+        }
+        out.join("\n").trim().to_string()
+    }
 
-        for c in html.chars() {
-            match c {
-                '<' => in_tag = true,
-                '>' => in_tag = false,
-                _ if !in_tag => result.push(c),
-                _ => {}
+    fn decode_entities(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut rest = s;
+        while let Some(amp) = rest.find('&') {
+            out.push_str(&rest[..amp]);
+            let tail = &rest[amp..];
+            let semi = tail.find(';').filter(|&p| p <= 10);
+            let decoded = semi.and_then(|p| {
+                let ent = &tail[1..p];
+                let ch = match ent {
+                    "amp" => Some('&'), "lt" => Some('<'), "gt" => Some('>'), "quot" => Some('"'), "apos" => Some('\''), "nbsp" => Some(' '),
+                    _ if ent.starts_with("#x") || ent.starts_with("#X") => u32::from_str_radix(&ent[2..], 16).ok().and_then(char::from_u32),
+                    _ if ent.starts_with('#') => ent[1..].parse::<u32>().ok().and_then(char::from_u32),
+                    _ => None,
+                };
+                ch.map(|c| (c, p + 1))
+            });
+            match decoded {
+                Some((c, len)) => { out.push(c); rest = &tail[len..]; }
+                None => { out.push('&'); rest = &tail[1..]; }
             }
         }
+        out.push_str(rest);
+        out
+    }
+}
 
-        // Clean up whitespace
-        result
-            .lines()
-            .map(|l| l.trim())
-            .filter(|l| !l.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n")
+#[cfg(test)]
+mod strip_tests {
+    use super::*;
+
+    #[test]
+    fn text_part_drops_head_and_style_keeps_breaks_decodes_entities() {
+        let html = "<html><head><title>T</title><style>body{color:red}</style></head><body><p>Hallo,</p><p>Klik &lt;hier&gt;<br>https:&#x2F;&#x2F;x.nl&#x2F;demo &amp; meer</p><p>a&nbsp;b &unknown; &#233;</p></body></html>";
+        let text = TemplateRenderer::strip_html(html);
+        assert_eq!(text, "Hallo,\nKlik <hier>\nhttps://x.nl/demo & meer\na b &unknown; \u{e9}");
     }
 }
 
