@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly: the Geodineum-COMMS watch
+
+[Timer]
+OnBootSec=5min
+OnCalendar=hourly
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target

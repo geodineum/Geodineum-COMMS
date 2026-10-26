@@ -16,6 +16,8 @@ pub struct DispatchResult {
     pub successful_channels: Vec<String>,
     pub failed_channels: Vec<DispatchError>,
     pub skipped_channels: Vec<String>,
+    /// Per channel, what the provider said (an email's `queued as …`), for the archive.
+    pub results: Vec<crate::persistence::ChannelResult>,
 }
 
 impl DispatchResult {
@@ -124,6 +126,7 @@ impl MessageDispatcher {
                 successful_channels: vec![],
                 failed_channels: vec![],
                 skipped_channels: vec!["all (site disabled)".to_string()],
+                results: vec![],
             });
         }
 
@@ -144,6 +147,7 @@ impl MessageDispatcher {
                         successful_channels: vec![],
                         failed_channels: vec![],
                         skipped_channels: vec![format!("telegram ({})", refusal)],
+                        results: vec![],
                     });
                 }
             },
@@ -156,6 +160,7 @@ impl MessageDispatcher {
                         successful_channels: vec![],
                         failed_channels: vec![],
                         skipped_channels: vec![format!("email ({})", refusal)],
+                        results: vec![],
                     });
                 }
             },
@@ -181,6 +186,10 @@ impl MessageDispatcher {
             successful_channels: vec![],
             failed_channels: vec![],
             skipped_channels: vec![],
+            results: vec![],
+        };
+        let done = |channel: &str, success: bool, provider_id: Option<String>, error: Option<String>| crate::persistence::ChannelResult {
+            channel: channel.to_string(), success, provider_id, error, sent_at: Some(chrono::Utc::now().to_rfc3339()),
         };
 
         // Dispatch to each channel
@@ -190,11 +199,13 @@ impl MessageDispatcher {
             // single COMMS hub carry submissions (anonymous polls, signals) that
             // must be seen by the operator but never emailed/messaged.
             if matches!(channel_name.as_str(), "record" | "log" | "none") {
+                result.results.push(done(&channel_name, false, None, Some("recorded only".into())));
                 result.skipped_channels.push(channel_name);
                 continue;
             }
             match self.dispatch_to_channel(&channel_name, message, linked.as_ref().unwrap_or(&settings), addressed.as_ref()).await {
-                Ok(()) => {
+                Ok(provider_id) => {
+                    result.results.push(done(&channel_name, true, provider_id, None));
                     result.successful_channels.push(channel_name);
                 }
                 Err(e) => {
@@ -207,10 +218,12 @@ impl MessageDispatcher {
                         // intended recipients were logged in dispatch_to_channel
                         // but no real send fired (non-production environment).
                         if err_msg == "delivery_off" || SKIP_MARKERS.contains(&err_msg.as_str()) {
+                            result.results.push(done(channel, false, None, Some(err_msg.clone())));
                             result.skipped_channels.push(channel.clone());
                             continue;
                         }
                     }
+                    result.results.push(done(&channel_name, false, None, Some(e.to_string())));
                     result.failed_channels.push(DispatchError::new(
                         channel_name,
                         e,
@@ -334,7 +347,7 @@ impl MessageDispatcher {
         message: &CommsMessage,
         settings: &SiteSettings,
         addressed: Option<&RecipientConfig>,
-    ) -> Result<()> {
+    ) -> Result<Option<String>> {
         if send_block(self.delivery_off, true, &message.environment) == Some("delivery_off") {
             warn!(
                 site_id = %message.site_id,
@@ -450,6 +463,7 @@ impl MessageDispatcher {
 
         let mut last_error = None;
         let mut success_count = 0;
+        let mut provider_ids: Vec<String> = Vec::new();
 
         for recipient in &recipients {
             match channel.send(message, recipient, &channel_config).await {
@@ -460,6 +474,9 @@ impl MessageDispatcher {
                         provider_id = ?send_result.provider_id,
                         "Sent notification"
                     );
+                    if let Some(p) = send_result.provider_id {
+                        provider_ids.push(p);
+                    }
                     success_count += 1;
                 }
                 Err(e) => {
@@ -481,7 +498,7 @@ impl MessageDispatcher {
             }
         }
 
-        Ok(())
+        Ok(if provider_ids.is_empty() { None } else { Some(provider_ids.join("; ")) })
     }
 
     /// Get channel configuration from settings

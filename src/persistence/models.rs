@@ -53,10 +53,20 @@ impl MessageStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelResult {
     pub channel: String,
+    /// SQLite's json_object writes it as 0/1
+    #[serde(deserialize_with = "bool_or_int")]
     pub success: bool,
     pub provider_id: Option<String>,
     pub error: Option<String>,
     pub sent_at: Option<String>,
+}
+
+fn bool_or_int<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Bool(b) => Ok(b),
+        serde_json::Value::Number(n) => Ok(n.as_i64().unwrap_or(0) != 0),
+        _ => Ok(false),
+    }
 }
 
 /// Archived message with full history
@@ -178,4 +188,16 @@ pub struct ChannelStats {
     pub telegram_failed: u64,
     pub sms_sent: u64,
     pub sms_failed: u64,
+}
+
+#[cfg(test)]
+mod channel_result_tests {
+    use super::ChannelResult;
+
+    #[test]
+    fn the_archive_writes_success_as_0_or_1_and_it_reads_back() {
+        let v: Vec<ChannelResult> = serde_json::from_str(r#"[{"channel":"email","success":1,"provider_id":"2.0.0 Ok: queued as ABC","error":null,"sent_at":"x"},{"channel":"telegram","success":0,"provider_id":null,"error":"delivery_off","sent_at":"x"}]"#).unwrap();
+        assert!(v[0].success && !v[1].success);
+        assert_eq!(v[0].provider_id.as_deref(), Some("2.0.0 Ok: queued as ABC"));
+    }
 }

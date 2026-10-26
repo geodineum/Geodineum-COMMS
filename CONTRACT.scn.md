@@ -43,6 +43,7 @@ Rust + tokio 1.35 async (full). clap 4.4 CLI. Modules:
 - `persistence/` — `MessageStore` r2d2 SQLite pool, per-site isolation
 - `settings/` — `SettingsStore` ValKey-backed + in-mem RwLock cache
 - `inbound/` — `TelegramReceiver` long-poll getUpdates + CommandRouter + ConversationState + SPR engine + `WorkflowDispatcher` + response_poller [BETA, undocumented schema]
+- failsafe: email Message-ID `<comms.<id>@domain>`; archive records per-channel provider answer (`queued as`); `watch` (hourly timer, user geodineum-comms + group adm) = heartbeat + failed|partial_sent|skipped receipts of all production sites + daily summary mail through COMMS read back from mail.log (signed, delivered) + daily "all well"; alerts straight to Telegram; state `{bot}:gnode:comms:watch`; `ledger <site>` = archive + mail log
 - `inbound/web_link.rs` — a web subscriber's Telegram: `/start <site>-<CODE>`|`/link` → record + route + answer; message → site-stream `direct` (daemon checks reach); `/unlink`; gate: non-admin passes receiver only private + (link|unlink|linked); linked non-admin commands → no router; 60 msgs/h per account (`{bot}:gnode:comms:rate:<op>:<hour>`)
 - `dtap/` — is_production + environment_from_stream_key
 - `templates/` — Tera per-channel · `cli/` — output formatters

@@ -156,6 +156,7 @@ impl EmailChannel {
         service_id: &str,
         recipient_email: &str,
         content: &RenderedContent,
+        comms_id: &str,
     ) -> Result<Message> {
         // Only send as a domain this host can authenticate; unauthorized
         // senders fall back to the ecosystem default (see sender_policy).
@@ -179,10 +180,13 @@ impl EmailChannel {
             .as_deref()
             .unwrap_or("Notification from gNode");
 
+        // The Message-ID names this COMMS message, so the mail log's lines for it can be found (`geodineum-comms watch`, the ledger).
+        let domain = sender.from_email.rsplit_once('@').map(|(_, d)| d).unwrap_or("localhost");
         let mut builder = Message::builder()
             .from(from)
             .to(to)
-            .subject(subject);
+            .subject(subject)
+            .message_id(Some(message_id_for(comms_id, domain)));
 
         // Add reply-to if configured; when the sender was replaced by the
         // fallback and no reply-to exists, keep the site's own address as
@@ -225,6 +229,12 @@ impl EmailChannel {
     }
 }
 
+/// `<comms.<id>@<domain>>` with the id reduced to what a Message-ID may carry.
+pub fn message_id_for(comms_id: &str, domain: &str) -> String {
+    let id: String = comms_id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '.').take(80).collect();
+    format!("<comms.{}@{}>", if id.is_empty() { "x" } else { &id }, domain)
+}
+
 #[async_trait]
 impl NotificationChannel for EmailChannel {
     fn name(&self) -> &str {
@@ -257,7 +267,7 @@ impl NotificationChannel for EmailChannel {
             .await?;
 
         // Build message
-        let email_message = self.build_message(&smtp_config, &message.site_id, recipient_email, &content)?;
+        let email_message = self.build_message(&smtp_config, &message.site_id, recipient_email, &content, &message.id)?;
 
         // Get transport and send
         let transport = self.get_transport(&smtp_config).await?;
@@ -407,5 +417,17 @@ mod tests {
         assert!(cfg(serde_json::json!({"smtp_host": "smtp.example.org", "smtp_port": 587})).tls());
         assert!(cfg(serde_json::json!({"smtp_host": "127.0.0.1", "smtp_tls": true})).tls());
         assert!(!cfg(serde_json::json!({"smtp_host": "smtp.example.org", "use_tls": false})).tls());
+    }
+}
+
+#[cfg(test)]
+mod message_id_tests {
+    use super::message_id_for;
+
+    #[test]
+    fn the_message_id_names_the_comms_message_and_carries_nothing_unsafe() {
+        assert_eq!(message_id_for("9f61-2ce4", "geodineum.com"), "<comms.9f61-2ce4@geodineum.com>");
+        assert_eq!(message_id_for("a b>\r\nX: y", "d.example"), "<comms.abXy@d.example>");
+        assert_eq!(message_id_for("", "d.example"), "<comms.x@d.example>");
     }
 }

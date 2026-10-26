@@ -136,6 +136,30 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Start) | None => {
             run_daemon(&cli, &config).await?;
         }
+        Some(Command::Watch { ref mail_log, digest_hour, ref chat }) => {
+            let client = redis::Client::open(cli.redis_url()?)?;
+            let mut conn = client.get_multiplexed_tokio_connection().await?;
+            let admin_first = std::env::var("COMMS_ADMIN_IDS").ok().and_then(|v| v.split(',').next().map(|s| s.trim().to_string())).filter(|s| !s.is_empty());
+            let opts = geodineum_comms::watch::WatchOptions {
+                site: config.inbound.as_ref().and_then(|i| i.site_id.clone()).unwrap_or_else(|| "geodine".into()),
+                environment: cli.environment.clone(),
+                topology: std::env::var("GNODE_TOPOLOGY_NAMESPACE").unwrap_or_else(|_| "geodineum".into()),
+                node: cli.node_id.as_deref().and_then(|n| n.split('.').next()).map(String::from).unwrap_or_else(hostname_short),
+                mail_logs: mail_log.iter().map(std::path::PathBuf::from).collect(),
+                bot_token: std::env::var("TELEGRAM_BOT_TOKEN").ok().filter(|t| !t.is_empty()),
+                chat: chat.clone().or_else(|| std::env::var("COMMS_WATCH_CHAT").ok()).or(admin_first),
+                digest_hour,
+                send: cli.delivery != geodineum_comms::config::Delivery::Off,
+            };
+            let alerts = geodineum_comms::watch::run(&mut conn, &opts, geodineum_comms::receipt::now_ms()).await?;
+            println!("comms watch on {}: {} alert{}", opts.node, alerts.len(), if alerts.len() == 1 { "" } else { "s" });
+            for a in &alerts {
+                println!("  {a}");
+            }
+        }
+        Some(Command::Ledger { ref site_id, days, ref mail_log }) => {
+            run_ledger_command(site_id, days, mail_log)?;
+        }
         Some(Command::Stop) => {
             info!("Sending stop signal...");
             // TODO: Implement proper stop signal
@@ -525,7 +549,7 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
 
                         // Archive as spam, then ACK
                         if let Some(ref store) = message_store {
-                            match archive_message(store, &message, &entry_id, MessageStatus::Spam) {
+                            match archive_message(store, &message, &entry_id, MessageStatus::Spam, &[]) {
                                 Ok(_) => {
                                     backoff_tracker.record_success(&message.site_id);
                                     consumer.ack_message(&stream_key, &entry_id).await.ok();
@@ -668,7 +692,7 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
 
                             // Archive to SQLite first (transactional behavior)
                             let archive_success = if let Some(ref store) = message_store {
-                                match archive_message(store, &message, &entry_id, status) {
+                                match archive_message(store, &message, &entry_id, status, &result.results) {
                                     Ok(_) => {
                                         backoff_tracker.record_success(&message.site_id);
                                         true
@@ -796,7 +820,7 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
                                 "Claimed message exceeded max retries — ACKing as failed"
                             );
                             if let Some(ref store) = message_store {
-                                archive_message(store, &message, &entry_id, MessageStatus::Failed).ok();
+                                archive_message(store, &message, &entry_id, MessageStatus::Failed, &[]).ok();
                             }
                             writeback_status(&mut status_conn, &message.site_id, &entry_id, "failed", config.retry.max_attempts as i64, Some("exceeded max retries")).await;
                             consumer.ack_message(&stream_key, &entry_id).await.ok();
@@ -808,7 +832,7 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
                     let is_spam = spam_filter.as_ref().map(|f| f.check(&message).is_spam).unwrap_or(false);
                     if is_spam {
                         if let Some(ref store) = message_store {
-                            archive_message(store, &message, &entry_id, MessageStatus::Spam).ok();
+                            archive_message(store, &message, &entry_id, MessageStatus::Spam, &[]).ok();
                         }
                         consumer.ack_message(&stream_key, &entry_id).await.ok();
                         continue;
@@ -834,7 +858,7 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
                                 MessageStatus::Failed
                             };
                             if let Some(ref store) = message_store {
-                                archive_message(store, &message, &entry_id, status).ok();
+                                archive_message(store, &message, &entry_id, status, &result.results).ok();
                             }
                             writeback_status(&mut status_conn, &message.site_id, &entry_id, status.as_str(), 1, None).await;
                             consumer.ack_message(&stream_key, &entry_id).await.ok();
@@ -916,6 +940,9 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
                                                 MessageStatus::Sent,
                                             )
                                             .ok();
+                                        for r in &result.results {
+                                            store.record_channel_result(&retry_state.site_id, &retry_state.message_id, r).ok();
+                                        }
                                     }
                                     writeback_status(&mut status_conn, &retry_state.site_id, &retry_state.stream_entry_id, "sent", retry_state.attempts as i64, None).await;
                                     info!(
@@ -1723,6 +1750,7 @@ fn archive_message(
     message: &CommsMessage,
     stream_id: &str,
     status: MessageStatus,
+    results: &[geodineum_comms::persistence::ChannelResult],
 ) -> anyhow::Result<()> {
     // Archive the message (creates record with 'pending' status)
     store.archive_received(&message.site_id, message, stream_id)?;
@@ -1730,6 +1758,11 @@ fn archive_message(
     // Update status if not pending
     if status != MessageStatus::Pending {
         store.update_status(&message.site_id, &message.id, status)?;
+    }
+
+    // What each channel's provider said (an email's `queued as …`): the ledger's link to the mail log
+    for r in results {
+        store.record_channel_result(&message.site_id, &message.id, r)?;
     }
 
     Ok(())
@@ -2320,6 +2353,43 @@ fn run_messages_command(
     let messages = cli::list_messages(&store, site_id, status, message_type, limit)?;
     TablePrinter::print_messages(&messages, OutputFormat::from_str(format), verbose)?;
     Ok(())
+}
+
+/// Each message of a site in the last days, its channels, and for email what the mail log says of it.
+fn run_ledger_command(site_id: &str, days: u32, mail_logs: &[String]) -> anyhow::Result<()> {
+    let store = MessageStore::new(&get_data_dir())?;
+    let since = (chrono::Utc::now() - chrono::Duration::days(days as i64)).to_rfc3339();
+    let messages = store.list_messages(site_id, &geodineum_comms::persistence::MessageQuery {
+        status: None, message_type: None, since: Some(since), until: None, limit: 1000, offset: 0,
+    })?;
+    let mut text = String::new();
+    for p in mail_logs.iter().rev() {
+        if let Ok(s) = std::fs::read_to_string(p) {
+            text.push_str(&s);
+        }
+    }
+    let readable = !text.is_empty();
+    let traces = geodineum_comms::watch::parse_mail_log(text.lines());
+    println!("{site_id}: {} messages in {days} days{}", messages.len(), if readable { "" } else { " (mail log not readable: run in group adm)" });
+    for m in &messages {
+        let subject = serde_json::from_str::<serde_json::Value>(&m.content_json).ok()
+            .and_then(|c| c.get("subject").and_then(|s| s.as_str()).map(|s| s.chars().take(50).collect::<String>())).unwrap_or_default();
+        let channels: Vec<String> = m.channel_results().iter().map(|r| format!("{} {}{}", r.channel, if r.success { "ok" } else { "no" },
+            r.provider_id.as_deref().or(r.error.as_deref()).map(|x| format!(" ({})", x.chars().take(60).collect::<String>())).unwrap_or_default())).collect();
+        let mail = match geodineum_comms::watch::trace_for(&traces, &m.id) {
+            Some(t) => format!("mail log: {}, {}{}", if t.signed { "signed" } else { "UNSIGNED" }, if t.status.is_empty() { "queued".into() } else { t.status.join("/") },
+                t.relay.first().map(|r| format!(" via {r}")).unwrap_or_default()),
+            None if readable && m.channel_results().iter().any(|r| r.channel == "email" && r.success) => "mail log: not found (older than the log, or sent before COMMS set its Message-ID)".into(),
+            None => String::new(),
+        };
+        println!("{}  {:<10} {:<12} {}  {}{}", &m.received_at.get(..16).unwrap_or(&m.received_at), m.message_type, m.status.as_str(), subject,
+            if channels.is_empty() { "-".into() } else { channels.join(", ") }, if mail.is_empty() { String::new() } else { format!("  [{mail}]") });
+    }
+    Ok(())
+}
+
+fn hostname_short() -> String {
+    std::fs::read_to_string("/etc/hostname").ok().and_then(|h| h.trim().split('.').next().map(String::from)).unwrap_or_else(|| "unknown".into())
 }
 
 /// Show stats

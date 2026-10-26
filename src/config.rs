@@ -108,6 +108,32 @@ pub enum Command {
     /// Start the daemon
     Start,
 
+    /// One watch (a timer runs it hourly): heartbeat, every production delivery receipt, the daily
+    /// summary mail and its check in the mail log; alerts to Telegram directly
+    Watch {
+        /// Mail logs to read the daily mail back from (newest first)
+        #[arg(long, default_values_t = vec!["/var/log/mail.log".to_string(), "/var/log/mail.log.1".to_string()])]
+        mail_log: Vec<String>,
+        /// UTC hour from which the day's summary goes out
+        #[arg(long, default_value_t = 5)]
+        digest_hour: u32,
+        /// Telegram chat for alerts (default: COMMS_WATCH_CHAT, else the first COMMS_ADMIN_IDS)
+        #[arg(long)]
+        chat: Option<String>,
+    },
+
+    /// What a site's mail did: each message, its channels, and (for email) what the mail log says
+    Ledger {
+        /// Site ID
+        site_id: String,
+        /// How many days back
+        #[arg(long, default_value_t = 7)]
+        days: u32,
+        /// Mail logs to read (newest first)
+        #[arg(long, default_values_t = vec!["/var/log/mail.log".to_string(), "/var/log/mail.log.1".to_string()])]
+        mail_log: Vec<String>,
+    },
+
     /// Stop the daemon (sends SIGTERM)
     Stop,
 

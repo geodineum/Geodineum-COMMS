@@ -82,6 +82,26 @@ and in a private chat anyone else only for `/start <site>-<CODE>`, `/link …`, 
 linked; callbacks and groups stay admin-only. A linked person's commands reach no router; an admin
 who linked their own account keeps their commands, and their free text continues their window.
 
+### 1.2b The watch and the ledger (the failsafe)
+
+"Sent" means the local mail server accepted a message, never that it left. Every email COMMS sends carries the
+Message-ID `<comms.<message id>@<sender domain>>`, and the archive records each channel's result with what the
+provider said (`queued as <id>` for email), so a message can be followed into the mail log.
+
+`geodineum-comms watch` (hourly, `config/geodineum-comms-watch.{service,timer}`, installed by `scripts/watch-timer.sh`;
+as `geodineum-comms` with group `adm` to read `/var/log/mail.log`): alerts on a missing COMMS heartbeat and on every
+`failed`, `partial_sent` or `skipped` delivery receipt of every production site since its last look (the first look
+only sets its cursors); once a day (from `--digest-hour`, UTC) it queues a summary mail to the operator site's email
+recipients through COMMS itself (type `system`, channel email) and, from 20 minutes on, reads it back from the mail log:
+handed to the mail server, DKIM-signed, delivered; anything short of that after three hours is an alert. Alerts and
+the daily "all well" line go to Telegram straight from the watcher (the bot token COMMS holds; chat `COMMS_WATCH_CHAT`
+or the first `COMMS_ADMIN_IDS`), so they still go when COMMS is down; a missing daily line means the watcher is.
+State: `{bot site}:gnode:comms:watch` (cursors per site, the pending daily mail, the last day's alerts).
+
+`geodineum-comms ledger <site> [--days 7]`: each archived message of a site, its channels with the provider's answer
+or the error, and for email what the mail log says (signed, delivered, relay). Read-only; run as `geodineum-comms` in
+group `adm`.
+
 ### 1.3 Workflow dispatch (stream producer)
 
 - Writes structured workflow requests to `{site_id}:gnode:comms:workflows:{env}`

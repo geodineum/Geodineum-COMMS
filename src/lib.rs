@@ -21,6 +21,7 @@ pub mod retry;
 pub mod router;
 pub mod settings;
 pub mod templates;
+pub mod watch;
 pub mod valkey_scan;
 
 // Re-exports for convenience

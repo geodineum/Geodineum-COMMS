@@ -1,0 +1,21 @@
+[Unit]
+Description=Geodineum-COMMS watch: heartbeat, failed deliveries, the daily mail read back from the mail log
+After=network.target valkey-gnode.service
+
+[Service]
+Type=oneshot
+User=geodineum-comms
+Group=geodineum-comms
+SupplementaryGroups=geodineum-bootstrap adm
+WorkingDirectory=/opt/geodineum/Geodineum-COMMS
+EnvironmentFile=-/etc/geodineum/components/geodineum-comms/geodineum-comms.env
+ExecStart=/opt/geodineum/Geodineum-COMMS/target/release/geodineum-comms \
+    --redis-auth-file /etc/geodineum/credentials/valkey_comms.password \
+    --log-level warn \
+    watch
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+TimeoutStartSec=120
+SyslogIdentifier=geodineum-comms-watch
