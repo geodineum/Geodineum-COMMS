@@ -7,7 +7,9 @@
 //!   - once a day COMMS mails the operator the per-site summary through its own pipeline (the canary),
 //!     and the next run reads the mail log for that message's Message-ID: accepted, signed (DKIM), sent;
 //!     anything short of that is an alert;
-//!   - once a day one line says all is well, so a silent watcher is itself noticed.
+//!   - once a day one line says all is well, so a silent watcher is itself noticed;
+//!   - every nightly job that leaves a status file in the jobs directory: a failed run, or no success
+//!     within its `max_age_h`, is an alert.
 //!
 //! Alerts go to Telegram straight from here, not through COMMS, so they still go when COMMS does not.
 //! This module holds what can be decided without ValKey or a mail server: the mail log, the alerts.
@@ -95,6 +97,66 @@ pub fn receipt_alert(site: &str, fields: &HashMap<String, String>) -> Option<Str
     }
     let err = fields.get("e").map(|e| format!(": {}", e.chars().take(200).collect::<String>())).unwrap_or_default();
     Some(format!("{site}: a message {} ({}){err}", st.replace('_', " "), fields.get("cid").map(String::as_str).unwrap_or("?")))
+}
+
+/// What a job's status file (`key=value` lines: `what`, `max_age_h`, `ok_ms`, `run_ms`, `error`) says.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct JobStatus {
+    pub what: String,
+    pub max_age_h: u64,
+    pub ok_ms: u64,
+    pub run_ms: u64,
+    pub error: String,
+}
+
+pub fn parse_job_status(name: &str, text: &str) -> JobStatus {
+    let mut j = JobStatus { what: name.to_string(), max_age_h: 26, ..Default::default() };
+    for line in text.lines() {
+        let Some((k, v)) = line.split_once('=') else { continue };
+        let v = v.trim();
+        match k.trim() {
+            "what" if !v.is_empty() => j.what = v.to_string(),
+            "max_age_h" => j.max_age_h = v.parse().unwrap_or(26),
+            "ok_ms" => j.ok_ms = v.parse().unwrap_or(0),
+            "run_ms" => j.run_ms = v.parse().unwrap_or(0),
+            "error" => j.error = v.chars().take(300).collect(),
+            _ => {}
+        }
+    }
+    j
+}
+
+/// What was last said about a job, so a failed run alerts once and a stale job once a day.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct JobSeen {
+    #[serde(default)]
+    pub failed_run_ms: u64,
+    #[serde(default)]
+    pub stale_alerted_ms: u64,
+}
+
+fn utc(ms: u64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms as i64).map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string()).unwrap_or_else(|| "never".into())
+}
+
+pub fn job_alert(j: &JobStatus, seen: &mut JobSeen, now_ms: u64) -> Option<String> {
+    if !j.error.is_empty() && j.run_ms > j.ok_ms {
+        if seen.failed_run_ms == j.run_ms {
+            return None;
+        }
+        seen.failed_run_ms = j.run_ms;
+        return Some(format!("{} failed at {}: {}", j.what, utc(j.run_ms), j.error));
+    }
+    if now_ms.saturating_sub(j.ok_ms) > j.max_age_h * 3_600_000 {
+        if now_ms.saturating_sub(seen.stale_alerted_ms) < 86_400_000 {
+            return None;
+        }
+        seen.stale_alerted_ms = now_ms;
+        let last = if j.ok_ms == 0 { "never succeeded".to_string() } else { format!("last succeeded {}", utc(j.ok_ms)) };
+        return Some(format!("{}: no success in {} h ({last})", j.what, j.max_age_h));
+    }
+    seen.stale_alerted_ms = 0;
+    None
 }
 
 /// Per-site counts for the daily summary.
@@ -194,6 +256,41 @@ Oct 26 10:40:05 aesir-solutions postfix/smtp[1490834]: 51AA0121AD7: to=<a@exampl
         assert_eq!(t["b_com"], Tally { sent: 0, failed: 0, skipped: 1 });
         assert!(summary_text("2026-10-26", &t).contains("b_com: 0 sent, 0 failed, 1 skipped"));
     }
+
+    const H: u64 = 3_600_000;
+    const T0: u64 = 1_790_000_000_000;
+
+    #[test]
+    fn a_job_status_file_is_read_with_defaults() {
+        let j = parse_job_status("sites-backup", "what=sites backup\nok_ms=5\nrun_ms=5\nerror=\nnoise\n");
+        assert_eq!(j, JobStatus { what: "sites backup".into(), max_age_h: 26, ok_ms: 5, run_ms: 5, error: String::new() });
+        assert_eq!(parse_job_status("x", "").what, "x");
+    }
+
+    #[test]
+    fn a_failed_run_alerts_once() {
+        let j = JobStatus { what: "sites backup".into(), max_age_h: 26, ok_ms: T0, run_ms: T0 + 24 * H, error: "upload".into() };
+        let mut seen = JobSeen::default();
+        assert!(job_alert(&j, &mut seen, T0 + 25 * H).unwrap().contains("sites backup failed at"));
+        assert_eq!(job_alert(&j, &mut seen, T0 + 26 * H - 1), None);
+        let next = JobStatus { run_ms: T0 + 48 * H, ..j.clone() };
+        assert!(job_alert(&next, &mut seen, T0 + 48 * H).is_some());
+    }
+
+    #[test]
+    fn a_job_without_a_recent_success_alerts_once_a_day_and_clears() {
+        let j = JobStatus { what: "sites backup".into(), max_age_h: 26, ok_ms: T0, run_ms: T0, error: String::new() };
+        let mut seen = JobSeen::default();
+        assert_eq!(job_alert(&j, &mut seen, T0 + 25 * H), None);
+        assert!(job_alert(&j, &mut seen, T0 + 27 * H).unwrap().contains("no success in 26 h"));
+        assert_eq!(job_alert(&j, &mut seen, T0 + 30 * H), None);
+        assert!(job_alert(&j, &mut seen, T0 + 52 * H).is_some());
+        let ok = JobStatus { ok_ms: T0 + 53 * H, run_ms: T0 + 53 * H, ..j.clone() };
+        assert_eq!(job_alert(&ok, &mut seen, T0 + 54 * H), None);
+        assert_eq!(seen.stale_alerted_ms, 0);
+        let never = JobStatus { ok_ms: 0, run_ms: 0, ..j };
+        assert!(job_alert(&never, &mut JobSeen::default(), T0).unwrap().contains("never succeeded"));
+    }
 }
 
 // ----- the run: ValKey, the mail log, Telegram -----
@@ -212,6 +309,8 @@ pub struct WatchOptions {
     pub digest_hour: u32,
     /// false: print what would be sent (delivery off).
     pub send: bool,
+    /// Nightly jobs' status files (`<job>.status`), read by the watcher's group.
+    pub jobs_dir: std::path::PathBuf,
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -226,6 +325,8 @@ struct WatchState {
     alerts: Vec<(u64, String)>,
     #[serde(default)]
     heartbeat_alerted_ms: u64,
+    #[serde(default)]
+    jobs: HashMap<String, JobSeen>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -328,6 +429,25 @@ pub async fn run(conn: &mut redis::aio::MultiplexedConnection, opts: &WatchOptio
         let ys: Vec<(String, HashMap<String, String>)> = redis::cmd("XRANGE").arg(stream).arg(format!("{y0}-0")).arg(format!("{}-0", day_start - 1))
             .arg("COUNT").arg(10_000).query_async(conn).await.unwrap_or_default();
         yesterday.extend(ys.into_iter().map(|(_, f)| (site.clone(), f)));
+    }
+
+    // Nightly jobs outside COMMS
+    if let Ok(dir) = std::fs::read_dir(&opts.jobs_dir) {
+        let mut names: Vec<String> = Vec::new();
+        for e in dir.flatten() {
+            let path = e.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(".status")).map(String::from) else { continue };
+            let text = match std::fs::read_to_string(&path) {
+                Ok(t) => t,
+                Err(err) => format!("error=cannot read {}: {err}\nrun_ms={}", path.display(), now_ms / 86_400_000 * 86_400_000),
+            };
+            let seen = st.jobs.entry(name.clone()).or_default();
+            if let Some(a) = job_alert(&parse_job_status(&name, &text), seen, now_ms) {
+                alerts.push(a);
+            }
+            names.push(name);
+        }
+        st.jobs.retain(|k, _| names.contains(k));
     }
 
     // Yesterday's canary, read back from the mail log

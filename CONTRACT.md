@@ -96,7 +96,12 @@ recipients through COMMS itself (type `system`, channel email) and, from 20 minu
 handed to the mail server, DKIM-signed, delivered; anything short of that after three hours is an alert. Alerts and
 the daily "all well" line go to Telegram straight from the watcher (the bot token COMMS holds; chat `COMMS_WATCH_CHAT`
 or the first `COMMS_ADMIN_IDS`), so they still go when COMMS is down; a missing daily line means the watcher is.
-State: `{bot site}:gnode:comms:watch` (cursors per site, the pending daily mail, the last day's alerts).
+Nightly jobs outside COMMS report through it too: each `<job>.status` in `/var/lib/geodineum-watch`
+(`COMMS_WATCH_JOBS_DIR`; readable by group `adm`) holds `key=value` lines `what`, `max_age_h` (default 26), `ok_ms`
+(last success), `run_ms` (last run), `error` (empty on success). A run newer than the last success with an `error` is
+an alert once; no success within `max_age_h` is an alert once a day; an unreadable file is an alert once a day.
+State: `{bot site}:gnode:comms:watch` (cursors per site, the pending daily mail, the last day's alerts, what was last
+said per job).
 
 `geodineum-comms ledger <site> [--days 7]`: each archived message of a site, its channels with the provider's answer
 or the error, and for email what the mail log says (signed, delivered, relay). Read-only; run as `geodineum-comms` in

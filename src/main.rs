@@ -150,6 +150,7 @@ async fn main() -> anyhow::Result<()> {
                 chat: chat.clone().or_else(|| std::env::var("COMMS_WATCH_CHAT").ok()).or(admin_first),
                 digest_hour,
                 send: cli.delivery != geodineum_comms::config::Delivery::Off,
+                jobs_dir: std::env::var("COMMS_WATCH_JOBS_DIR").unwrap_or_else(|_| "/var/lib/geodineum-watch".into()).into(),
             };
             let alerts = geodineum_comms::watch::run(&mut conn, &opts, geodineum_comms::receipt::now_ms()).await?;
             println!("comms watch on {}: {} alert{}", opts.node, alerts.len(), if alerts.len() == 1 { "" } else { "s" });

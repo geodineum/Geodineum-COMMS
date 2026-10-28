@@ -10,7 +10,8 @@ async fn conn() -> Option<redis::aio::MultiplexedConnection> {
 
 fn opts(site: &str, log: &std::path::Path) -> WatchOptions {
     WatchOptions { site: site.into(), environment: "production".into(), topology: "wtest".into(), node: "n1".into(),
-        mail_logs: vec![log.to_path_buf()], bot_token: None, chat: None, digest_hour: 0, send: false }
+        mail_logs: vec![log.to_path_buf()], bot_token: None, chat: None, digest_hour: 0, send: false,
+        jobs_dir: log.parent().unwrap().join("jobs") }
 }
 
 async fn receipt(c: &mut redis::aio::MultiplexedConnection, site: &str, st: &str) {
@@ -69,5 +70,35 @@ Oct 27 06:00:05 h postfix/smtp[3]: DEF456: to=<op@example.invalid>, relay=mx.exa
     assert!(run(&mut c, &o, t0 + 25 * H).await.unwrap().is_empty(), "within three hours it waits");
     let a = run(&mut c, &o, t0 + 28 * H).await.unwrap();
     assert!(a.iter().any(|x| x.contains("unsigned")), "{a:?}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// the watcher reads every site's receipts, so alerts from the other test can show up here
+fn mine(a: Vec<String>) -> Vec<String> {
+    a.into_iter().filter(|x| x.starts_with("sites backup")).collect()
+}
+
+#[tokio::test]
+async fn a_nightly_job_that_failed_or_went_quiet_is_an_alert() {
+    let Some(mut c) = conn().await else { return };
+    let dir = std::env::temp_dir().join(format!("wj-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("jobs")).unwrap();
+    let log = dir.join("mail.log");
+    std::fs::write(&log, "").unwrap();
+    let o = WatchOptions { digest_hour: 23, topology: "wjtest".into(), ..opts("wj_bot", &log) };
+    let _: () = redis::cmd("SET").arg("{wjtest}:gnode:heartbeat:production:comms:n1").arg("{}").query_async(&mut c).await.unwrap();
+    let t0: u64 = 1_800_000_000_000 / 86_400_000 * 86_400_000 + 8 * H;
+    let job = dir.join("jobs/sites-backup.status");
+
+    std::fs::write(&job, format!("what=sites backup\nok_ms={}\nrun_ms={t0}\nerror=upload\n", t0 - 24 * H)).unwrap();
+    let a = mine(run(&mut c, &o, t0 + H).await.unwrap());
+    assert!(a.len() == 1 && a[0].contains("sites backup failed at") && a[0].contains("upload"), "{a:?}");
+    assert!(mine(run(&mut c, &o, t0 + 2 * H).await.unwrap()).is_empty(), "said once");
+
+    std::fs::write(&job, format!("what=sites backup\nok_ms={t0}\nrun_ms={t0}\nerror=\n")).unwrap();
+    let a = mine(run(&mut c, &o, t0 + 3 * H).await.unwrap());
+    assert!(a.is_empty(), "{a:?}");
+    let a = mine(run(&mut c, &o, t0 + 27 * H).await.unwrap());
+    assert!(a.iter().any(|x| x.contains("no success in 26 h")), "{a:?}");
     std::fs::remove_dir_all(&dir).ok();
 }
