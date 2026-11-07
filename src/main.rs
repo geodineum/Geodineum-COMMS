@@ -304,14 +304,21 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
     // Initialize consumer groups
     consumer.initialize_groups().await?;
 
+    let admin_bot = config.inbound.as_ref().and_then(|i| i.admin_bot).unwrap_or(false);
+
     // Create message dispatcher
     let dispatcher = MessageDispatcher::new(
         channel_registry.clone(),
         settings_store.clone(),
         cli.allow_nonprod_send,
         cli.delivery == geodineum_comms::config::Delivery::Off,
-    )
-    .with_link_site(config.inbound.as_ref().and_then(|i| i.site_id.clone()).unwrap_or_else(|| "geodine".to_string()));
+    );
+    // Without a link site an addressed Telegram message is refused: the admin bot carries no subscriber's mail.
+    let dispatcher = if admin_bot {
+        dispatcher
+    } else {
+        dispatcher.with_link_site(config.inbound.as_ref().and_then(|i| i.site_id.clone()).unwrap_or_else(|| "geodine".to_string()))
+    };
 
     // Create spam filter: built-in blocklists extended by the YAML config
     // (spam_filter.keywords_blocklist / ip_blocklist were previously
@@ -357,7 +364,8 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
 
     let command_router = CommandRouter::new()
         .with_inference_chain(chain_enabled)
-        .with_workflow_dispatcher(workflow_dispatcher);
+        .with_workflow_dispatcher(workflow_dispatcher)
+        .with_admin_bot(admin_bot);
 
     // Spawn Telegram inbound poller for each site that has Telegram configured
     // with admin_ids. We check settings on startup; new sites discovered later
@@ -383,7 +391,11 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
             // `.unwrap_or_default()` flattening, so the receiver can
             // distinguish "not configured" (None) from "configured-empty"
             // (Some(vec![]) → fail-closed).
-            let admin_ids: Option<Vec<i64>> = inbound_cfg.admin_ids.clone();
+            let mut admin_ids: Option<Vec<i64>> = inbound_cfg.admin_ids.clone();
+            if admin_bot && admin_ids.as_ref().map_or(true, |ids| ids.is_empty()) {
+                error!("COMMS_ADMIN_BOT is set without COMMS_ADMIN_IDS: fail-closed, the bot answers nobody");
+                admin_ids = Some(vec![]);
+            }
 
             let mut receiver = TelegramReceiver::new(
                 bot_token.clone(),
@@ -391,7 +403,8 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
                 inbound_site_id.clone(),
                 cli.environment.clone(),
                 admin_ids,
-            );
+            )
+            .with_admin_bot(admin_bot);
 
             let child_cancel = cancel_token.clone();
             tokio::spawn(async move {
@@ -1131,7 +1144,8 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
 
                         // A web subscriber's Telegram (the Geodine window): /link, /unlink, and their
                         // messages continue the web conversation through the site's own relay.
-                        if fields.get("chat_type").map(|s| s.as_str()).unwrap_or("private") == "private"
+                        if !admin_bot
+                            && fields.get("chat_type").map(|s| s.as_str()).unwrap_or("private") == "private"
                             && fields.get("is_callback").map(|s| s.as_str()) != Some("true")
                             && web_subscriber(&mut inbound_conn, &WebCtx {
                                 link_site: &inbound_site_id,
@@ -1151,14 +1165,17 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
                             continue;
                         }
 
-                        // Get or create conversation state
-                        let state = conv_state
-                            .get_or_create(&chat_id, &inbound_site_id, &operator_id, &operator_name)
-                            .await;
-
-                        let (pipeline, session_id) = match &state {
-                            Ok(s) => (s.pipeline.clone(), s.session_id.clone()),
-                            Err(_) => (default_pipeline.clone(), String::new()),
+                        // Get or create conversation state (the admin bot has no conversations)
+                        let (pipeline, session_id) = if admin_bot {
+                            (String::new(), String::new())
+                        } else {
+                            match conv_state
+                                .get_or_create(&chat_id, &inbound_site_id, &operator_id, &operator_name)
+                                .await
+                            {
+                                Ok(s) => (s.pipeline.clone(), s.session_id.clone()),
+                                Err(_) => (default_pipeline.clone(), String::new()),
+                            }
                         };
 
                         // Build InboundMessage for routing
@@ -1192,7 +1209,7 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
                                         // an earlier hardening pass: command text comes from Telegram operator input;
                                         // normalize before tracing to prevent log-line forgery.
                                         info!(command = %geodineum_comms::inbound::log_safe(&command), "Handling local command");
-                                        let response_text = handle_local_command(&command, &params);
+                                        let response_text = if admin_bot { admin_bot_reply(&command) } else { handle_local_command(&command, &params) };
                                         // Reply directly via Telegram (skip outbound pipeline)
                                         if let Some(ref token) = inbound_bot_token {
                                             let _ = send_telegram_reply(token, &chat_id, &response_text).await;
@@ -1328,6 +1345,11 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
                                             ).await;
                                         }
                                     }
+                                    CommandAction::Start if admin_bot => {
+                                        if let Some(ref token) = inbound_bot_token {
+                                            let _ = send_telegram_reply(token, &chat_id, &admin_bot_reply("help")).await;
+                                        }
+                                    }
                                     CommandAction::Start => {
                                         if let Some(ref token) = inbound_bot_token {
                                             let keyboard = geodineum_comms::inbound::build_inline_keyboard(vec![
@@ -1373,6 +1395,9 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
                                                 )
                                                 .await;
                                             }
+                                        } else if admin_bot {
+                                            // A grant press: the receiver answered it and `geodineum grants watch` reads it from the stream.
+                                            debug!(callback_data = %data, "Admin bot: button press left to its own reader");
                                         } else if let Some(ref token) = inbound_bot_token {
                                             // Answer the callback (removes loading spinner)
                                             answer_callback(token, &query_id, None).await;
@@ -1526,7 +1551,7 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
 
                                             if processing_msg_id > 0 {
                                                 let client = reqwest::Client::new();
-                                                let url = format!("https://api.telegram.org/bot{}/editMessageText", token);
+                                                let url = format!("{}/bot{}/editMessageText", geodineum_comms::telegram_api(), token);
                                                 let payload = serde_json::json!({
                                                     "chat_id": chat_id,
                                                     "message_id": processing_msg_id,
@@ -1956,7 +1981,7 @@ async fn web_subscriber(
 
 async fn send_telegram_reply(bot_token: &str, chat_id: &str, text: &str) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
-    let url = format!("https://api.telegram.org/bot{}/sendMessage", bot_token);
+    let url = format!("{}/bot{}/sendMessage", geodineum_comms::telegram_api(), bot_token);
     let payload = serde_json::json!({
         "chat_id": chat_id,
         "text": text,
@@ -1974,7 +1999,7 @@ async fn send_telegram_message_with_keyboard(
     reply_markup: &serde_json::Value,
 ) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
-    let url = format!("https://api.telegram.org/bot{}/sendMessage", bot_token);
+    let url = format!("{}/bot{}/sendMessage", geodineum_comms::telegram_api(), bot_token);
     let payload = serde_json::json!({
         "chat_id": chat_id,
         "text": text,
@@ -1988,9 +2013,7 @@ async fn send_telegram_message_with_keyboard(
 /// Answer a Telegram callback query (removes loading spinner from button)
 async fn answer_callback(bot_token: &str, query_id: &str, text: Option<&str>) {
     let client = reqwest::Client::new();
-    let url = format!(
-        "https://api.telegram.org/bot{}/answerCallbackQuery",
-        bot_token
+    let url = format!("{}/bot{}/answerCallbackQuery", geodineum_comms::telegram_api(), bot_token
     );
     let mut payload = serde_json::json!({ "callback_query_id": query_id });
     if let Some(t) = text {
@@ -2004,9 +2027,7 @@ async fn answer_callback(bot_token: &str, query_id: &str, text: Option<&str>) {
 /// failed edit never blocks the recorded vote.
 async fn edit_message_clear_keyboard(bot_token: &str, chat_id: &str, message_id: i64) {
     let client = reqwest::Client::new();
-    let url = format!(
-        "https://api.telegram.org/bot{}/editMessageReplyMarkup",
-        bot_token
+    let url = format!("{}/bot{}/editMessageReplyMarkup", geodineum_comms::telegram_api(), bot_token
     );
     let payload = serde_json::json!({
         "chat_id": chat_id,
@@ -2227,6 +2248,19 @@ async fn get_conversation_history(
     }
 
     lines.join("\n\n")
+}
+
+/// What the admin bot says. It answers only its operators; conversations are GeodineBot's.
+fn admin_bot_reply(command: &str) -> String {
+    match command {
+        "status" | "health" => "Geodineum-COMMS is running.".to_string(),
+        "help" => "This bot carries the constellation's alerts, grant requests and polls.\n\n\
+                   /status — COMMS is running\n\
+                   /help — This message\n\n\
+                   Reply to an alert with QUARANTINE, DISMISS, RETRY or UPDATE."
+            .to_string(),
+        _ => "This bot has no conversations. Talk to GeodineBot; here, /help.".to_string(),
+    }
 }
 
 /// Handle a local command (executed within COMMS, not routed to components)

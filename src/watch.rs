@@ -373,7 +373,7 @@ async fn telegram(opts: &WatchOptions, text: &str) -> bool {
         println!("[would send to Telegram]\n{text}");
         return true;
     }
-    let url = format!("https://api.telegram.org/bot{token}/sendMessage");
+    let url = format!("{}/bot{token}/sendMessage", crate::telegram_api());
     reqwest::Client::new().post(&url).json(&serde_json::json!({"chat_id": chat, "text": text}))
         .timeout(std::time::Duration::from_secs(20)).send().await.map(|r| r.status().is_success()).unwrap_or(false)
 }

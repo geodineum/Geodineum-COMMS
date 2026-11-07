@@ -86,6 +86,8 @@ pub struct CommandRouter {
     workflow_dispatcher: Option<WorkflowDispatcher>,
     /// Whether the staged inference chain is enabled
     pub chain_enabled: bool,
+    /// The admin bot: nothing here ever becomes a conversation
+    pub admin_bot: bool,
 }
 
 impl CommandRouter {
@@ -96,7 +98,14 @@ impl CommandRouter {
             ],
             workflow_dispatcher: None,
             chain_enabled: false,
+            admin_bot: false,
         }
+    }
+
+    /// The admin bot: /status, /help, alert replies, workflow intents; everything else is answered with where to go
+    pub fn with_admin_bot(mut self, admin_bot: bool) -> Self {
+        self.admin_bot = admin_bot;
+        self
     }
 
     /// Enable workflow dispatch with the given dispatcher
@@ -139,6 +148,9 @@ impl CommandRouter {
 
         // 1. Slash commands
         if parsed.is_slash {
+            if self.admin_bot {
+                return Ok(Self::admin_slash(&parsed));
+            }
             return Ok(self.handle_slash(&parsed, pipeline));
         }
 
@@ -159,6 +171,10 @@ impl CommandRouter {
             }
 
             // Not a valid reply or workflow — fall through to inference
+        }
+
+        if self.admin_bot {
+            return Ok(CommandAction::Local { command: "not_here".to_string(), params: vec![] });
         }
 
         // 3. Conversational text → inference service
@@ -244,6 +260,14 @@ impl CommandRouter {
         first_word.len() >= 3
             && first_word.chars().all(|c| c.is_ascii_uppercase() || c == '_')
             && text.split_whitespace().count() <= 4 // reply commands are short
+    }
+
+    fn admin_slash(parsed: &ParsedCommand) -> CommandAction {
+        match parsed.command.as_str() {
+            "start" => CommandAction::Start,
+            "status" | "health" | "help" => CommandAction::Local { command: parsed.command.clone(), params: vec![] },
+            _ => CommandAction::Local { command: "not_here".to_string(), params: vec![] },
+        }
     }
 
     /// Handle a slash command

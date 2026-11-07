@@ -77,7 +77,7 @@ impl TelegramChannel {
         bot_token: &str,
         chat_id: &str,
     ) -> Result<()> {
-        let url = format!("https://api.telegram.org/bot{}/sendChatAction", bot_token);
+        let url = format!("{}/bot{}/sendChatAction", crate::telegram_api(), bot_token);
 
         let payload = serde_json::json!({
             "chat_id": chat_id,
@@ -103,7 +103,7 @@ impl TelegramChannel {
         text: &str,
         parse_mode: &str,
     ) -> Result<()> {
-        let url = format!("https://api.telegram.org/bot{}/editMessageText", bot_token);
+        let url = format!("{}/bot{}/editMessageText", crate::telegram_api(), bot_token);
 
         let payload = serde_json::json!({
             "chat_id": chat_id,
@@ -162,7 +162,7 @@ impl TelegramChannel {
         disable_notification: bool,
         reply_markup: Option<&serde_json::Value>,
     ) -> Result<i64> {
-        let url = format!("https://api.telegram.org/bot{}/sendMessage", bot_token);
+        let url = format!("{}/bot{}/sendMessage", crate::telegram_api(), bot_token);
 
         let mut payload = serde_json::json!({
             "chat_id": chat_id,

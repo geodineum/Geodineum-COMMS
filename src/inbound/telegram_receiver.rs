@@ -157,6 +157,8 @@ pub struct TelegramReceiver {
     /// intended behavior when an operator sets the env var to a
     /// mis-parsed value (e.g. `junk,stuff`).
     admin_ids: Option<Vec<i64>>,
+    /// The admin bot: only the listed operators pass, nobody reaches it to link a window
+    admin_bot: bool,
     /// Bot's own username (populated on first getMe call)
     bot_username: Option<String>,
     /// Bot's own user_id (populated on first getMe call). an earlier hardening pass:
@@ -177,7 +179,7 @@ impl TelegramReceiver {
     ) -> Self {
         Self {
             client: Client::new(),
-            api_base: format!("https://api.telegram.org/bot{}", bot_token),
+            api_base: format!("{}/bot{}", crate::telegram_api(), bot_token),
             bot_token,
             offset: 0,
             poll_timeout: 30,
@@ -185,9 +187,15 @@ impl TelegramReceiver {
             site_id,
             environment,
             admin_ids,
+            admin_bot: false,
             bot_username: None,
             bot_user_id: None,
         }
+    }
+
+    pub fn with_admin_bot(mut self, admin_bot: bool) -> Self {
+        self.admin_bot = admin_bot;
+        self
     }
 
     /// Get the inbound stream key for this site
@@ -303,7 +311,12 @@ impl TelegramReceiver {
     /// Register bot commands with BotFather (shows in Telegram UI)
     pub async fn register_commands(&self) -> Result<()> {
         let url = format!("{}/setMyCommands", self.api_base);
-        let commands = serde_json::json!({
+        let commands = if self.admin_bot { serde_json::json!({
+            "commands": [
+                {"command": "status", "description": "System status"},
+                {"command": "help", "description": "Show available commands"},
+            ]
+        }) } else { serde_json::json!({
             "commands": [
                 {"command": "start", "description": "Start / show menu"},
                 {"command": "reset", "description": "Reset conversation"},
@@ -313,7 +326,7 @@ impl TelegramReceiver {
                 {"command": "help", "description": "Show available commands"},
                 {"command": "unlink", "description": "Stop continuing your Geodine window here"},
             ]
-        });
+        }) };
 
         self.client
             .post(&url)
@@ -463,7 +476,7 @@ impl TelegramReceiver {
                     let user_id: i64 = inbound.operator_id.parse().unwrap_or(0);
                     // an earlier hardening pass fail-closed gate (see above).
                     let unauthorized = matches!(&self.admin_ids, Some(allowed) if !allowed.contains(&user_id));
-                    if unauthorized && !self.web_subscriber_may_pass(&inbound).await {
+                    if unauthorized && (self.admin_bot || !self.web_subscriber_may_pass(&inbound).await) {
                         debug!(
                             operator_id = %inbound.operator_id,
                             "Ignoring message from unauthorized user"

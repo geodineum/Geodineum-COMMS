@@ -24,6 +24,14 @@ pub mod templates;
 pub mod watch;
 pub mod valkey_scan;
 
+/// The Bot API's base URL. `COMMS_TELEGRAM_API` points it at a test server (scripts/admin-bot-proof.sh).
+pub fn telegram_api() -> String {
+    std::env::var("COMMS_TELEGRAM_API")
+        .ok()
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| "https://api.telegram.org".to_string())
+}
+
 // Re-exports for convenience
 pub use channels::{
     ChannelConfig, ChannelRegistry, CommsMessage, EmailChannel, NotificationChannel,

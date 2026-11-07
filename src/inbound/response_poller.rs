@@ -54,7 +54,7 @@ pub async fn send_processing_indicator(
     pipeline: &str,
 ) -> Result<i64> {
     let client = Client::new();
-    let url = format!("https://api.telegram.org/bot{}/sendMessage", bot_token);
+    let url = format!("{}/bot{}/sendMessage", crate::telegram_api(), bot_token);
 
     let payload = serde_json::json!({
         "chat_id": chat_id,
@@ -92,7 +92,7 @@ pub async fn send_processing_indicator(
 pub fn spawn_response_poller(mut conn: MultiplexedConnection, req: PollRequest) {
     tokio::spawn(async move {
         let client = Client::new();
-        let api_base = format!("https://api.telegram.org/bot{}", req.bot_token);
+        let api_base = format!("{}/bot{}", crate::telegram_api(), req.bot_token);
 
         let deadline = tokio::time::Instant::now()
             + Duration::from_secs(req.timeout_secs);

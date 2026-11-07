@@ -316,6 +316,9 @@ pub struct InboundConfig {
     /// When false, uses single-pipeline direct inference (default)
     #[serde(default)]
     pub inference_chain_enabled: Option<bool>,
+    /// The admin bot: alerts, grants, polls and /status only; no conversations, no window links
+    #[serde(default)]
+    pub admin_bot: Option<bool>,
 }
 
 impl InboundConfig {
@@ -328,6 +331,7 @@ impl InboundConfig {
     ///   COMMS_INBOUND_PIPELINE — default pipeline (default "sysadmin")
     ///   COMMS_ADMIN_IDS       — comma-separated Telegram user IDs
     ///   COMMS_INFERENCE_CHAIN — "true" to enable the staged chain
+    ///   COMMS_ADMIN_BOT       — "true": the admin bot, nothing conversational
     pub fn merge_env(&mut self) {
         if let Ok(token) = std::env::var("TELEGRAM_BOT_TOKEN") {
             if !token.is_empty() {
@@ -372,6 +376,9 @@ impl InboundConfig {
         }
         if let Ok(v) = std::env::var("COMMS_INFERENCE_CHAIN") {
             self.inference_chain_enabled = Some(v.eq_ignore_ascii_case("true") || v == "1");
+        }
+        if let Ok(v) = std::env::var("COMMS_ADMIN_BOT") {
+            self.admin_bot = Some(v.eq_ignore_ascii_case("true") || v == "1");
         }
     }
 

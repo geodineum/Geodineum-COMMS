@@ -48,6 +48,8 @@ spam_filter:
 #   COMMS_INBOUND_PIPELINE    — default pipeline (default: sysadmin)
 #   COMMS_ADMIN_IDS           — comma-separated Telegram user IDs
 #   COMMS_INFERENCE_CHAIN     — "true" to enable the staged draft→review→guard chain
+#   COMMS_ADMIN_BOT           — "true": the admin bot (alerts, grants, polls, /status; no conversations)
+#   COMMS_TELEGRAM_API        — Bot API base URL (default https://api.telegram.org; proofs point it at a fake)
 #
 # Inbound activates automatically when TELEGRAM_BOT_TOKEN is set. This YAML
 # section is optional — it exists only to document non-secret defaults.

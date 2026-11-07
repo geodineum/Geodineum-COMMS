@@ -39,6 +39,21 @@ entries:
       Enables the staged inference chain (draft -> review -> guard
       stages instead of single-pipeline direct inference).
 
+  - key: COMMS_ADMIN_BOT
+    type: bool
+    default: false
+    mutable: true
+    description: >-
+      The admin bot: alerts, grant requests, polls, workflow intents,
+      /status and /help for the operators in COMMS_ADMIN_IDS. No
+      conversations, no window links. Set by the cutover script.
+
+  - key: COMMS_TELEGRAM_API
+    type: string
+    default: https://api.telegram.org
+    mutable: false
+    description: Bot API base URL; a proof points it at a fake server.
+
   - key: INFERENCE_TIMEOUT
     type: int
     default: 30

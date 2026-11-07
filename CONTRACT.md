@@ -82,6 +82,24 @@ and in a private chat anyone else only for `/start <site>-<CODE>`, `/link …`, 
 linked; callbacks and groups stay admin-only. A linked person's commands reach no router; an admin
 who linked their own account keeps their commands, and their free text continues their window.
 
+### 1.2c The admin bot (`COMMS_ADMIN_BOT=true`): the Geodineum bot after the split
+
+With the switch on, the bot COMMS polls carries the constellation's alerts, grant requests and polls and nothing
+conversational: no pipelines, sessions or inference, no window links (§1.2a is off: `/start <site>-<CODE>`, `/link`
+and `/unlink` reach nobody, and an addressed `to: {telegram}` is refused `no_bot`). Only the operators in
+`COMMS_ADMIN_IDS` pass the receiver; the switch without that list answers nobody and says so at startup. What the
+operators get: `/status`, `/help`, replies to alerts (`QUARANTINE`, `DISMISS`, `RETRY`, …), workflow intents, poll
+and grant buttons (a grant press is left on the inbound stream for `geodineum grants watch`, answered once). Everything
+else is answered with where conversations live (GeodineBot, in Geodine). Its menu is `/status` and `/help`.
+
+The bot site is `geodineum` (`COMMS_INBOUND_SITE`), whose `{geodineum}:comms:config` holds the token as
+`channels.telegram`; only COMMS and operators may read that key. `scripts/geodineum-bot-cutover.sh` moves COMMS from
+GeodineBot to the Geodineum bot on aesir (preflight reads only; cutover and rollback prompt for the token and never
+print it): the Telegram channel moves between the two sites' settings, the env file gets the token, the site and the
+switch, and COMMS and the grants watch restart. One token has one poller: GeodineBot is silent from the cutover until
+Geodine polls it on squad. Every Bot API call goes through `COMMS_TELEGRAM_API` (default `https://api.telegram.org`;
+a proof points it at `tests/fake_telegram.py`). Proof: `scripts/admin-bot-proof.sh` (57 checks, real binary, real grant).
+
 ### 1.2b The watch and the ledger (the failsafe)
 
 "Sent" means the local mail server accepted a message, never that it left. Every email COMMS sends carries the
