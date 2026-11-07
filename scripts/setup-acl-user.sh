@@ -169,11 +169,11 @@ fi
 #   - Site discovery: gnode:site:*:meta, gnode:sites:registry (read-only)
 #   - Global GSD keys: gnode:* (for routing info)
 #
-# The ~* pattern for comms is intentional: COMMS delivers for every site, and the
-# wildcard tag is the one cross-constellation read of the estate (D17; R-3 retires
-# it). The heartbeat grant is its own key in every constellation it serves.
+# The wildcard tag on comms is intentional: COMMS delivers for every site, the one
+# cross-constellation grant of the estate (D17; R-3 retires it). Discovery and what
+# Geodine leaves are read-only; a site's command stream can only be added to and read.
 
-"$GNODE_DIR/scripts/valkey-cli-secure.sh" ACL SETUSER "$ACL_USER" resetkeys \
+"$GNODE_DIR/scripts/valkey-cli-secure.sh" ACL SETUSER "$ACL_USER" resetkeys clearselectors \
     '~*:gnode:comms:*' \
     '~*:comms:config' \
     '~*:comms:retry:*' \
@@ -182,15 +182,18 @@ fi
     '~*:comms:conversation:*' \
     '~*:comms:context:*' \
     '~*:comms:active_context:*' \
-    '~gnode:site:*' \
-    '~gnode:sites:*' \
-    '~gnode:routing:*' \
-    '~topology:*' \
-    '~*:gnode:schema:*' \
+    '%R~gnode:site:*' \
+    '%R~gnode:sites:*' \
+    '%R~gnode:routing:*' \
+    '%R~topology:*' \
+    '%R~*:gnode:schema:*' \
+    '%R~*:inference:metrics:*' \
+    '%R~*:inference:history:*' \
+    '%R~*:gnode:pipeline:_index' \
+    '~*:gnode:receipt_pubkeys' \
+    '~*:gnode:receipts:*' \
     '~*:gnode:heartbeat:*:comms:*' \
-    '~*:gnode:unified:*' \
-    '~*:inference:metrics:*' \
-    '~*:inference:history:*'
+    '(~*:gnode:unified:* -@all +xadd +xrange +xrevrange +xlen)'
 
 echo "   ✅ Set keyspace permissions"
 echo "      - *:gnode:comms:* (all site comms streams, incl. inbound)"
@@ -200,11 +203,11 @@ echo "      - *:comms:messages:* (tracking)"
 echo "      - *:comms:conversation:* (inbound sessions)"
 echo "      - *:comms:context:* (reply-correlation contexts)"
 echo "      - *:comms:active_context:* (active context pointers)"
-echo "      - gnode:site:* (site discovery)"
-echo "      - *:gnode:schema:* (component schema registry)"
-echo "      - *:gnode:unified:* (inference service stream)"
-echo "      - *:inference:metrics:* (pipeline status reads)"
-echo "      - *:inference:history:* (conversation history reads)"
+echo "      - gnode:site:* (site discovery, read-only)"
+echo "      - *:gnode:schema:* (component schema registry, read-only)"
+echo "      - *:gnode:unified:* (a site's command stream: add and read only)"
+echo "      - *:inference:metrics:* (pipeline status, read-only)"
+echo "      - *:inference:history:* (conversation history, read-only)"
 
 # ============================================
 # Set Channel Permissions
