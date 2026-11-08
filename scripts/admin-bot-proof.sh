@@ -4,7 +4,7 @@
 #   bash scripts/admin-bot-proof.sh
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ACL_SRC="${ACL_SRC:-$HOME/gh/Geodineum-pro/scripts/restore-comms-acl-least-privilege.sh}"
+ACL_SRC="${ACL_SRC:-$HOME/gh/Geodineum-pro/install.sh}"
 COMMS="$ROOT/target/release/geodineum-comms"
 P=${PROOF_VALKEY_PORT:-47996}; TP=${PROOF_TELEGRAM_PORT:-47995}
 
@@ -45,12 +45,12 @@ valkey-server "$W/valkey.conf" >/dev/null 2>&1 &
 CHILDREN+=($!)
 until_ 50 vk PING || die "the throwaway ValKey did not start: $(tail -3 "$W/valkey.log")"
 
-# The grant exactly as the restore script holds it: the lines of its two arrays, comments and quotes dropped.
-grant_words() { sed -n "/^$1=(/,/^)/p" "$ACL_SRC" | sed '1d;$d;s/#.*//' | tr -s ' \t\n' '\n' | sed "s/^'//;s/'\$//;s/\\\\//g" | grep -v '^$'; }
-mapfile -t CMDS < <(grant_words COMMANDS); mapfile -t KEYS < <(grant_words KEYS)
+# The grant exactly as the installer gives it: its two arrays, read by the shell.
+grant_array() { awk -v name="local $1=(" 'index($0, name) { f=1; next } f && /^    \)$/ { exit } f' "$ACL_SRC"; }
+eval "CMDS=($(grant_array acl_comms_commands))"; eval "KEYS=($(grant_array acl_comms_keys))"
 (( ${#CMDS[@]} > 20 && ${#KEYS[@]} > 10 )) || die "could not read the grant from $ACL_SRC (${#CMDS[@]} commands, ${#KEYS[@]} keys)"
 # The ACL line goes to valkey-cli on stdin: the password is on no command line.
-applied="$(printf 'ACL SETUSER geodineum_comms on >%s resetkeys resetchannels &* %s %s\n' "$(<"$W/comms.pw")" "${CMDS[*]}" "${KEYS[*]}" | vk)"
+applied="$( { printf 'ACL SETUSER geodineum_comms on >%s resetkeys clearselectors resetchannels &*' "$(<"$W/comms.pw")"; printf ' "%s"' "${CMDS[@]}" "${KEYS[@]}"; printf '\n'; } | vk)"
 [[ "$applied" == OK ]] || die "the grant was not applied: $applied"
 check "the grant is the real one: COMMS reads no site's own data" "$(vk ACL DRYRUN geodineum_comms GET '{nierto_com}:gcore:cache:x' | grep -c 'no permissions')" 1
 check "the grant is the real one: KEYS refused, HSETNX on a context allowed" "$(vk ACL DRYRUN geodineum_comms KEYS '*' | grep -c 'no permissions'):$(vk ACL DRYRUN geodineum_comms HSETNX '{x}:comms:context:p' f v)" 1:OK

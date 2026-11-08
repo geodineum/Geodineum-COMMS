@@ -187,6 +187,8 @@ fi
     '%R~gnode:routing:*' \
     '%R~topology:*' \
     '%R~*:gnode:schema:*' \
+    '~*:gnode:schema:geodineum_comms:*' \
+    '~*:gnode:schema:_index' \
     '%R~*:inference:metrics:*' \
     '%R~*:inference:history:*' \
     '%R~*:gnode:pipeline:_index' \
