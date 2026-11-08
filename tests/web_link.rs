@@ -16,6 +16,8 @@ use geodineum_comms::router::MessageDispatcher;
 use geodineum_comms::settings::{SettingsStore, SiteSettings};
 use geodineum_comms::templates::TemplateRenderer;
 
+static LAST: parking_lot::Mutex<Option<CommsMessage>> = parking_lot::Mutex::new(None);
+
 #[derive(Default)]
 struct Recorder {
     sent: Mutex<Vec<String>>,
@@ -26,7 +28,10 @@ impl NotificationChannel for Recorder {
     fn name(&self) -> &str {
         "telegram"
     }
-    async fn send(&self, _m: &CommsMessage, r: &RecipientConfig, _c: &ChannelConfig) -> Result<SendResult> {
+    async fn send(&self, m: &CommsMessage, r: &RecipientConfig, _c: &ChannelConfig) -> Result<SendResult> {
+        if m.message_type == "change_request" {
+            *LAST.lock() = Some(m.clone());
+        }
         self.sent.lock().push(r.address.get("chat_id").cloned().unwrap_or_default());
         Ok(SendResult { success: true, provider_id: None, metadata: HashMap::new() })
     }
@@ -211,17 +216,54 @@ fn to_operators(site: &str, types: &str) -> CommsMessage {
 async fn a_message_to_the_operators_goes_to_the_bot_sites_chat_only() {
     let Some(mut c) = conn().await else { return };
     let site = "wl_op";
-    let (d, rec) = dispatcher(&mut c, "wl_bot_op", site, vec!["change_request".into()], true).await;
+    // the site's own settings allow nothing: what it may send the operators is not its to decide
+    let (d, rec) = dispatcher(&mut c, "wl_bot_op", site, vec![], true).await;
     let d = d.with_operator_site("wl_bot_op");
     let r = d.dispatch(&to_operators(site, "change_request")).await.unwrap();
     assert_eq!(r.successful_channels, vec!["telegram"]);
     assert_eq!(*rec.sent.lock(), vec!["999"], "the bot site's chat, nothing the site named");
-    assert_eq!(d.dispatch(&to_operators(site, "login")).await.unwrap().skipped_channels, vec!["telegram (addressed_type_refused)"], "the site must allow the type");
-    let (off, rec2) = dispatcher(&mut c, "wl_bot_op2", site, vec!["change_request".into()], false).await;
+    let (d2, _) = dispatcher(&mut c, "wl_bot_op", site, vec!["alert".into()], true).await;
+    assert_eq!(d2.with_operator_site("wl_bot_op").dispatch(&to_operators(site, "alert")).await.unwrap().skipped_channels, vec!["telegram (addressed_type_refused)"], "a site allowing itself a type changes nothing");
+    let (off, rec2) = dispatcher(&mut c, "wl_bot_op2", site, vec![], false).await;
     assert_eq!(off.with_operator_site("wl_bot_op2").dispatch(&to_operators(site, "change_request")).await.unwrap().skipped_channels, vec!["telegram (no_bot)"], "the channel is off");
-    let (none, _) = dispatcher(&mut c, "wl_bot_op3", site, vec!["change_request".into()], true).await;
+    let (none, _) = dispatcher(&mut c, "wl_bot_op3", site, vec![], true).await;
     assert_eq!(none.dispatch(&to_operators(site, "change_request")).await.unwrap().skipped_channels, vec!["telegram (no_bot)"], "no operator site, no delivery");
     assert!(rec2.sent.lock().is_empty());
+}
+
+#[tokio::test]
+async fn the_operators_cap_is_out_of_the_sites_reach() {
+    let Some(mut c) = conn().await else { return };
+    let site = "wl_cap";
+    let bot = "wl_bot_cap";
+    let (d, rec) = dispatcher(&mut c, bot, site, vec![], true).await;
+    let d = d.with_operator_site(bot);
+    let store = SettingsStore::new(c.clone());
+    for _ in 0..50 {
+        store.count_operator(bot, site).await.unwrap();
+    }
+    // what a compromised site can do: raise its own cap, delete its own counter
+    let mut own = SiteSettings::new(site);
+    own.addressed.daily_cap = 1_000_000;
+    set(&mut c, &format!("{{{}}}:comms:config", site), &serde_json::to_string(&own).unwrap()).await;
+    assert_eq!(d.dispatch(&to_operators(site, "change_request")).await.unwrap().skipped_channels, vec!["telegram (addressed_cap)"]);
+    assert!(rec.sent.lock().is_empty());
+}
+
+#[tokio::test]
+async fn a_message_to_the_operators_has_no_buttons_of_the_sites_and_names_the_site() {
+    let Some(mut c) = conn().await else { return };
+    let site = "wl_btn";
+    let (d, _) = dispatcher(&mut c, "wl_bot_btn", site, vec![], true).await;
+    let d = d.with_operator_site("wl_bot_btn");
+    let mut m = to_operators(site, "change_request");
+    m.dispatch = Some(serde_json::from_str(r#"{"channels":["telegram"],"reply_markup":{"inline_keyboard":[[{"text":"Bekijk","callback_data":"grant:approve:x"}]]}}"#).unwrap());
+    m.content.body = Some("hallo".into());
+    let r = d.dispatch(&m).await.unwrap();
+    assert_eq!(r.successful_channels, vec!["telegram"]);
+    let sent = LAST.lock().clone().expect("sent");
+    assert!(sent.dispatch.as_ref().and_then(|x| x.reply_markup.as_ref()).is_none(), "the site's button must not reach the chat");
+    assert_eq!(sent.content.body.as_deref(), Some("Site wl_btn\n\nhallo"));
 }
 
 #[tokio::test]

@@ -38,6 +38,21 @@ impl DispatchResult {
     }
 }
 
+/// What a site may send the operators, and how many a day. Not settings: a site writes its own.
+const OPERATOR_TYPES: &[&str] = &["change_request"];
+const OPERATOR_DAILY_CAP: u64 = 50;
+
+/// A message to the operators carries no buttons of the site's (a button in that chat can approve a grant) and says which site sent it.
+fn to_operators(message: &CommsMessage) -> CommsMessage {
+    let mut m = message.clone();
+    if let Some(d) = m.dispatch.as_mut() {
+        d.reply_markup = None;
+    }
+    let body = m.content.body.take().unwrap_or_default();
+    m.content.body = Some(format!("Site {}\n\n{}", m.site_id, body));
+    m
+}
+
 /// Dispatches messages to notification channels based on site settings
 pub struct MessageDispatcher {
     channel_registry: Arc<ChannelRegistry>,
@@ -118,6 +133,13 @@ impl MessageDispatcher {
         message: &CommsMessage,
         only: Option<&[String]>,
     ) -> Result<DispatchResult> {
+        let for_operators;
+        let message = if message.to.as_ref().is_some_and(|t| t.operator) {
+            for_operators = to_operators(message);
+            &for_operators
+        } else {
+            message
+        };
         let site_id = &message.site_id;
 
         // Load site settings
@@ -143,7 +165,7 @@ impl MessageDispatcher {
         // One for a web subscriber or for the operators goes by Telegram, with the bot site's channel.
         let mut linked: Option<SiteSettings> = None;
         let addressed = match &message.to {
-            Some(to) if to.operator => match self.operator_recipient(&settings, message).await? {
+            Some(to) if to.operator => match self.operator_recipient(message).await? {
                 Ok((r, bot)) => {
                     linked = Some(bot);
                     Some(r)
@@ -257,7 +279,13 @@ impl MessageDispatcher {
             }
         }
 
-        if addressed.is_some() && result.successful_channels.iter().any(|c| c == "email" || c == "telegram") {
+        if message.to.as_ref().is_some_and(|t| t.operator) {
+            if let (Some(bot), true) = (self.operator_site.as_deref(), result.successful_channels.iter().any(|c| c == "telegram")) {
+                if let Err(e) = self.settings_store.count_operator(bot, site_id).await {
+                    warn!(site_id = %site_id, error = %e, "Could not count a message to the operators");
+                }
+            }
+        } else if addressed.is_some() && result.successful_channels.iter().any(|c| c == "email" || c == "telegram") {
             if let Err(e) = self.settings_store.count_addressed(site_id).await {
                 warn!(site_id = %site_id, error = %e, "Could not count an addressed message against the daily cap");
             }
@@ -332,19 +360,19 @@ impl MessageDispatcher {
         Ok(Ok((RecipientConfig { address, types: vec![], min_priority: 5 }, bot)))
     }
 
-    /// The operators' chat, from the bot site's own settings; the same type gate and daily cap as any addressed message.
+    /// The operators' chat, from the bot site's own settings. The sending site's settings and counters are its own to
+    /// change, so the types and the cap here are not read from them.
     async fn operator_recipient(
         &self,
-        settings: &SiteSettings,
         message: &CommsMessage,
     ) -> Result<std::result::Result<(RecipientConfig, SiteSettings), &'static str>> {
-        if !settings.addressed.types.iter().any(|t| t == &message.message_type) {
+        if !OPERATOR_TYPES.contains(&message.message_type.as_str()) {
             return Ok(Err("addressed_type_refused"));
         }
-        if self.settings_store.addressed_sent_today(&message.site_id).await? >= settings.addressed.daily_cap {
+        let Some(site) = self.operator_site.as_deref() else { return Ok(Err("no_bot")) };
+        if self.settings_store.operator_sent_today(site, &message.site_id).await? >= OPERATOR_DAILY_CAP {
             return Ok(Err("addressed_cap"));
         }
-        let Some(site) = self.operator_site.as_deref() else { return Ok(Err("no_bot")) };
         let Some(bot) = self.settings_store.get_settings(site).await? else { return Ok(Err("no_bot")) };
         let chat = bot.channels.telegram.as_ref().filter(|c| c.enabled).and_then(|c| c.config.get("chat_id")).and_then(|v| match v {
             serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),

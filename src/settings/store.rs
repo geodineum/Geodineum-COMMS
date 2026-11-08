@@ -40,6 +40,25 @@ impl SettingsStore {
         Ok(n.unwrap_or(0))
     }
 
+    /// Messages this site sent the operators today, counted under the bot site's tag: a site cannot reset it.
+    pub async fn operator_sent_today(&self, bot_site: &str, site_id: &str) -> Result<u64> {
+        let mut conn = self.conn.clone();
+        let n: Option<u64> = conn.get(Self::operator_key(bot_site, site_id)).await.map_err(CommsError::ValKey)?;
+        Ok(n.unwrap_or(0))
+    }
+
+    pub async fn count_operator(&self, bot_site: &str, site_id: &str) -> Result<()> {
+        let key = Self::operator_key(bot_site, site_id);
+        let mut conn = self.conn.clone();
+        conn.incr::<_, _, ()>(&key, 1).await.map_err(CommsError::ValKey)?;
+        conn.expire::<_, ()>(&key, 172_800).await.map_err(CommsError::ValKey)?;
+        Ok(())
+    }
+
+    fn operator_key(bot_site: &str, site_id: &str) -> String {
+        format!("{{{}}}:comms:stats:operator:{}:{}", bot_site, site_id, chrono::Utc::now().format("%Y%m%d"))
+    }
+
     /// Count one addressed message sent; the counter lives two days.
     pub async fn count_addressed(&self, site_id: &str) -> Result<()> {
         let key = Self::addressed_key(site_id);
