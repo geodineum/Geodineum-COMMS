@@ -168,7 +168,7 @@ fn digest(site: &str, consumer: &str) -> CommsMessage {
         metadata: HashMap::new(),
         environment: "production".into(),
         dispatch: None,
-        to: Some(AddressedTo { email: String::new(), name: None, telegram: Some(consumer.into()) }),
+        to: Some(AddressedTo { email: String::new(), name: None, telegram: Some(consumer.into()), operator: false }),
     }
 }
 
@@ -198,6 +198,30 @@ async fn a_digest_needs_the_type_allowed_and_a_bot() {
     let (d, _) = dispatcher(&mut c, "wl_bot_i", site, vec!["alpha".into()], false).await;
     assert_eq!(d.dispatch(&digest(site, who)).await.unwrap().skipped_channels, vec!["telegram (no_bot)"]);
     assert!(rec.sent.lock().is_empty());
+}
+
+fn to_operators(site: &str, types: &str) -> CommsMessage {
+    let mut m = digest(site, "web:00000000000000ff");
+    m.message_type = types.to_string();
+    m.to = Some(geodineum_comms::channels::AddressedTo { email: String::new(), name: None, telegram: None, operator: true });
+    m
+}
+
+#[tokio::test]
+async fn a_message_to_the_operators_goes_to_the_bot_sites_chat_only() {
+    let Some(mut c) = conn().await else { return };
+    let site = "wl_op";
+    let (d, rec) = dispatcher(&mut c, "wl_bot_op", site, vec!["change_request".into()], true).await;
+    let d = d.with_operator_site("wl_bot_op");
+    let r = d.dispatch(&to_operators(site, "change_request")).await.unwrap();
+    assert_eq!(r.successful_channels, vec!["telegram"]);
+    assert_eq!(*rec.sent.lock(), vec!["999"], "the bot site's chat, nothing the site named");
+    assert_eq!(d.dispatch(&to_operators(site, "login")).await.unwrap().skipped_channels, vec!["telegram (addressed_type_refused)"], "the site must allow the type");
+    let (off, rec2) = dispatcher(&mut c, "wl_bot_op2", site, vec!["change_request".into()], false).await;
+    assert_eq!(off.with_operator_site("wl_bot_op2").dispatch(&to_operators(site, "change_request")).await.unwrap().skipped_channels, vec!["telegram (no_bot)"], "the channel is off");
+    let (none, _) = dispatcher(&mut c, "wl_bot_op3", site, vec!["change_request".into()], true).await;
+    assert_eq!(none.dispatch(&to_operators(site, "change_request")).await.unwrap().skipped_channels, vec!["telegram (no_bot)"], "no operator site, no delivery");
+    assert!(rec2.sent.lock().is_empty());
 }
 
 #[tokio::test]

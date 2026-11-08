@@ -50,6 +50,8 @@ pub struct MessageDispatcher {
     delivery_off: bool,
     /// The site holding the bot and the web-subscriber links (COMMS_INBOUND_SITE).
     link_site: Option<String>,
+    /// The bot site whose Telegram channel carries a message addressed to the operators.
+    operator_site: Option<String>,
 }
 
 /// Skip markers that mean "intentionally not sent": acknowledged and archived as
@@ -80,7 +82,13 @@ impl MessageDispatcher {
             allow_nonprod_send,
             delivery_off,
             link_site: None,
+            operator_site: None,
         }
+    }
+
+    pub fn with_operator_site(mut self, site: impl Into<String>) -> Self {
+        self.operator_site = Some(site.into());
+        self
     }
 
     pub fn with_link_site(mut self, site: impl Into<String>) -> Self {
@@ -132,9 +140,25 @@ impl MessageDispatcher {
 
         // An addressed message goes by email to its one recipient, never to the
         // site's configured recipients, and only if the site allows its type today.
-        // One for a web subscriber goes by Telegram, with the bot site's channel.
+        // One for a web subscriber or for the operators goes by Telegram, with the bot site's channel.
         let mut linked: Option<SiteSettings> = None;
         let addressed = match &message.to {
+            Some(to) if to.operator => match self.operator_recipient(&settings, message).await? {
+                Ok((r, bot)) => {
+                    linked = Some(bot);
+                    Some(r)
+                }
+                Err(refusal) => {
+                    warn!(site_id = %site_id, message_type = %message.message_type, refusal, "Message to the operators not sent");
+                    return Ok(DispatchResult {
+                        message_id: message.id.clone(),
+                        successful_channels: vec![],
+                        failed_channels: vec![],
+                        skipped_channels: vec![format!("telegram ({})", refusal)],
+                        results: vec![],
+                    });
+                }
+            },
             Some(to) if to.telegram.is_some() => match self.linked_recipient(&settings, message, to.telegram.as_deref().unwrap_or_default()).await? {
                 Ok((r, bot)) => {
                     linked = Some(bot);
@@ -303,6 +327,31 @@ impl MessageDispatcher {
         if !bot.channels.telegram.as_ref().is_some_and(|c| c.enabled) {
             return Ok(Err("no_bot"));
         }
+        let mut address = HashMap::new();
+        address.insert("chat_id".to_string(), chat);
+        Ok(Ok((RecipientConfig { address, types: vec![], min_priority: 5 }, bot)))
+    }
+
+    /// The operators' chat, from the bot site's own settings; the same type gate and daily cap as any addressed message.
+    async fn operator_recipient(
+        &self,
+        settings: &SiteSettings,
+        message: &CommsMessage,
+    ) -> Result<std::result::Result<(RecipientConfig, SiteSettings), &'static str>> {
+        if !settings.addressed.types.iter().any(|t| t == &message.message_type) {
+            return Ok(Err("addressed_type_refused"));
+        }
+        if self.settings_store.addressed_sent_today(&message.site_id).await? >= settings.addressed.daily_cap {
+            return Ok(Err("addressed_cap"));
+        }
+        let Some(site) = self.operator_site.as_deref() else { return Ok(Err("no_bot")) };
+        let Some(bot) = self.settings_store.get_settings(site).await? else { return Ok(Err("no_bot")) };
+        let chat = bot.channels.telegram.as_ref().filter(|c| c.enabled).and_then(|c| c.config.get("chat_id")).and_then(|v| match v {
+            serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
+            serde_json::Value::Number(n) => Some(n.to_string()),
+            _ => None,
+        });
+        let Some(chat) = chat else { return Ok(Err("no_bot")) };
         let mut address = HashMap::new();
         address.insert("chat_id".to_string(), chat);
         Ok(Ok((RecipientConfig { address, types: vec![], min_priority: 5 }, bot)))

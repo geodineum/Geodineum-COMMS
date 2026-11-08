@@ -65,6 +65,9 @@ pub struct AddressedTo {
     /// linked to that consumer (inbound::web_link), never to an address the site names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telegram: Option<String>,
+    /// The operators, in the chat of the bot site's own channel: no site names a chat or holds the token.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub operator: bool,
 }
 
 fn default_priority() -> u8 {

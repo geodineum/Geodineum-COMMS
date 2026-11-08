@@ -313,6 +313,7 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
         cli.allow_nonprod_send,
         cli.delivery == geodineum_comms::config::Delivery::Off,
     );
+    let dispatcher = dispatcher.with_operator_site(config.inbound.as_ref().and_then(|i| i.site_id.clone()).unwrap_or_else(|| "geodine".to_string()));
     // Without a link site an addressed Telegram message is refused: the admin bot carries no subscriber's mail.
     let dispatcher = if admin_bot {
         dispatcher
