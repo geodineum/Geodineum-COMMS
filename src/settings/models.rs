@@ -127,7 +127,8 @@ fn default_spam_action() -> SpamAction {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SpamAction {
-    /// Reject the message entirely
+    /// Reject the message entirely: not delivered, not archived (gCore's form calls it `drop`)
+    #[serde(alias = "drop")]
     Reject,
     /// Flag but still process
     #[default]

@@ -28,7 +28,7 @@ Notification daemon. gNode=Sun, ValKey=common backend. Stateless/state-aware: co
 - env merge: `TELEGRAM_BOT_TOKEN` `config.rs`
 - retry: post-ACK re-dispatch loop `main.rs` · re-fetch `fetch_message` XRANGE `stream_reader.rs` · CLI `retry` verb = SQLite status flip ONLY `cli/mod.rs`
 - discovery: periodic `maybe_rediscover` `stream_reader.rs` every `discovery_interval_secs` (default 60, 0=startup-only `config.rs`)
-- spam: `SpamFilter::with_extra_blocklists` YAML-additive over built-ins `spam.rs` wired `main.rs` (enabled:false default)
+- spam: visitor messages only (sender.email or non-loopback ip); score ≥0.7: ip 1.0 · email domain 0.8 · scattered address (≥5 pieces, ≥4 one-letter) 0.5 · gibberish name 0.5 · gibberish/random subject 0.4 · ≥3 links 0.4 · keyword as whole word 0.3; no weak signal alone (dots never spam by themselves); site `filters.spam_enabled` → built-ins + site lists, `spam_action` flag (deliver, `[spam?]` subject) | quarantine (archive spam, no dispatch) | reject = gCore `drop` (neither); else daemon-wide `spam_filter` (YAML additive, ON since 2026-11-09) quarantines; `messages <site> --status spam` lists held
 - CLI enum: `config.rs` (start|stop*|status*|test|encrypt*|sites|messages|stats|message|retry|cleanup|db-stats; *=print-only stub `main.rs`)
 - entry: `main.rs`, main loop spawns StreamConsumer + RetryManager(XAUTOCLAIM + post-ACK re-dispatch) + TelegramReceiver + response_poller
 - dispatch field: producer-minimal (ALL fields defaulted; `{}` valid); `reply_markup` → telegram inline keyboard verbatim, other channels ignore. Buttons answered via answerCallbackQuery AFTER stream write (ack = recorded, not received).

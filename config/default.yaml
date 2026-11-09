@@ -26,8 +26,9 @@ retry:
   max_delay_secs: 3600
 
 spam_filter:
-  # Enable spam filtering
-  enabled: false
+  # The daemon-wide filter for every site that has no filter of its own: spam from visitors is held in the
+  # archive (status spam), never sent; `geodineum-comms messages <site> --status spam` lists it
+  enabled: true
   # Keywords to block (case insensitive)
   keywords_blocklist:
     - viagra

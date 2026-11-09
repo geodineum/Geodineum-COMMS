@@ -2,4 +2,4 @@
 
 mod spam;
 
-pub use spam::SpamFilter;
+pub use spam::{from_visitor, verdict, SpamFilter, SpamVerdict};

@@ -549,12 +549,26 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
                         }
                     }
 
-                    // Check spam
-                    let spam_result = spam_filter.as_ref().map(|f| f.check(&message));
-                    let is_spam = spam_result.as_ref().map(|r| r.is_spam).unwrap_or(false);
+                    // Spam: the site's own filter when the site turned it on, otherwise the daemon-wide one
+                    let mut message = message;
+                    let site_filters = settings_store.get_settings(&message.site_id).await.ok().flatten().map(|s| s.filters);
+                    let quarantined = match geodineum_comms::filters::verdict(spam_filter.as_ref(), site_filters.as_ref(), &message) {
+                        geodineum_comms::filters::SpamVerdict::Clean => None,
+                        geodineum_comms::filters::SpamVerdict::Flag(r) => {
+                            warn!(message_id = %message.id, site_id = %message.site_id, score = r.score, reasons = ?r.reasons, "Spam flagged: delivered, subject marked");
+                            let subject = message.content.subject.take().unwrap_or_default();
+                            message.content.subject = Some(format!("[spam?] {}", subject).trim_end().to_string());
+                            None
+                        }
+                        geodineum_comms::filters::SpamVerdict::Drop(r) => {
+                            warn!(message_id = %message.id, site_id = %message.site_id, score = r.score, reasons = ?r.reasons, "Spam dropped: not delivered, not archived");
+                            consumer.ack_message(&stream_key, &entry_id).await.ok();
+                            continue;
+                        }
+                        geodineum_comms::filters::SpamVerdict::Quarantine(r) => Some(r),
+                    };
 
-                    if is_spam {
-                        let result = spam_result.unwrap();
+                    if let Some(result) = quarantined {
                         warn!(
                             message_id = %message.id,
                             score = result.score,
@@ -843,14 +857,26 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
                         }
                     }
 
-                    // Spam check
-                    let is_spam = spam_filter.as_ref().map(|f| f.check(&message).is_spam).unwrap_or(false);
-                    if is_spam {
-                        if let Some(ref store) = message_store {
-                            archive_message(store, &message, &entry_id, MessageStatus::Spam, &[]).ok();
+                    // Spam check, as for a new message
+                    let mut message = message;
+                    let site_filters = settings_store.get_settings(&message.site_id).await.ok().flatten().map(|s| s.filters);
+                    match geodineum_comms::filters::verdict(spam_filter.as_ref(), site_filters.as_ref(), &message) {
+                        geodineum_comms::filters::SpamVerdict::Clean => {}
+                        geodineum_comms::filters::SpamVerdict::Flag(_) => {
+                            let subject = message.content.subject.take().unwrap_or_default();
+                            message.content.subject = Some(format!("[spam?] {}", subject).trim_end().to_string());
                         }
-                        consumer.ack_message(&stream_key, &entry_id).await.ok();
-                        continue;
+                        geodineum_comms::filters::SpamVerdict::Drop(_) => {
+                            consumer.ack_message(&stream_key, &entry_id).await.ok();
+                            continue;
+                        }
+                        geodineum_comms::filters::SpamVerdict::Quarantine(_) => {
+                            if let Some(ref store) = message_store {
+                                archive_message(store, &message, &entry_id, MessageStatus::Spam, &[]).ok();
+                            }
+                            consumer.ack_message(&stream_key, &entry_id).await.ok();
+                            continue;
+                        }
                     }
 
                     // Rate limit check
