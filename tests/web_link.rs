@@ -222,6 +222,8 @@ async fn a_message_to_the_operators_goes_to_the_bot_sites_chat_only() {
     let r = d.dispatch(&to_operators(site, "change_request")).await.unwrap();
     assert_eq!(r.successful_channels, vec!["telegram"]);
     assert_eq!(*rec.sent.lock(), vec!["999"], "the bot site's chat, nothing the site named");
+    let r = d.dispatch(&to_operators(site, "lead")).await.unwrap();
+    assert_eq!(r.successful_channels, vec!["telegram"], "a lead reaches the operators too");
     let (d2, _) = dispatcher(&mut c, "wl_bot_op", site, vec!["alert".into()], true).await;
     assert_eq!(d2.with_operator_site("wl_bot_op").dispatch(&to_operators(site, "alert")).await.unwrap().skipped_channels, vec!["telegram (addressed_type_refused)"], "a site allowing itself a type changes nothing");
     let (off, rec2) = dispatcher(&mut c, "wl_bot_op2", site, vec![], false).await;

@@ -39,7 +39,7 @@ impl DispatchResult {
 }
 
 /// What a site may send the operators, and how many a day. Not settings: a site writes its own.
-const OPERATOR_TYPES: &[&str] = &["change_request"];
+const OPERATOR_TYPES: &[&str] = &["change_request", "lead"];
 const OPERATOR_DAILY_CAP: u64 = 50;
 
 /// A message to the operators carries no buttons of the site's (a button in that chat can approve a grant) and says which site sent it.
