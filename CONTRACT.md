@@ -55,50 +55,22 @@ per 60 s) names the service and the fix. With no default configured the mail
 is sent unmodified and the warning says so. Mail never silently stops; it
 also never silently dies at a recipient's DMARC because we signed nothing.
 
-### 1.2a Telegram linked to a web subscriber (the Geodine window)
+### 1.2a The Geodineum bot (Telegram, operators only)
 
-A site's web subscriber can link their Telegram account to the bot; from then on their messages
-continue their web conversation. The site writes a one-time code and a route in its own namespace;
-the person sends `/start <site>-<CODE>` (or `/link <site>-<CODE>`) to the bot. COMMS checks the code,
-records the account in the bot site's namespace (the authority; only COMMS writes it), puts the
-account on the route and answers the code:
+The bot COMMS polls (`TELEGRAM_BOT_TOKEN`, site `COMMS_INBOUND_SITE`, default `geodineum`) carries the
+constellation's alerts, grant requests and polls, and nothing conversational: conversations, sessions and a
+person's own Telegram are GeodineBot's, inside Geodine (since the cutover of 2026-11-08/09; the code that relayed
+them is archived in `~/gh/ARCHIVE/Geodineum-COMMS-geodine-paths-2026-11-09`). Only the operators in
+`COMMS_ADMIN_IDS` pass the receiver; without that list the bot answers nobody and says so at startup. What the
+operators get: `/start`, `/status`, `/help`, replies to alerts (`QUARANTINE`, `DISMISS`, `RETRY`, …, routed through
+`metadata.callback_stream`), workflow intents, poll buttons, and grant buttons (a grant press is answered once by the
+receiver and left on `{bot site}:gnode:comms:inbound:{env}` for `geodineum grants watch`). Anything else is answered
+with where conversations live. Its menu is `/status` and `/help`.
 
-    {site}:gnode:comms:link:<CODE>      the site's code {consumer, expires_ms}; answered {consumer, state: linked, operator, chat, name, at_ms}, 1 day
-    {site}:gnode:comms:tg:<consumer>    the site's route {consumer, lane, pipeline, session_id, system?, system_mode?, system_name?}; COMMS adds operator, chat
-    {bot site}:gnode:comms:web:<operator>   COMMS's record {site, consumer, chat, at_ms}
-
-A linked person's private message becomes a relayed `direct` on the SITE's own command stream,
-`{site}:gnode:unified:{env}`: `t c c direct p {pipeline, prompt (≤ 8000), consumer, session_id, system?}
-id tg-<operator>-<ms> ss <site> sn <node> ts <ms> _rt geodine via telegram cs <consumer> lane <lane>`.
-The gNode daemon checks the site's reach, as for anything the site sends; the reply comes home to the
-site, and COMMS reads it forward from the command's entry and answers in Telegram. COMMS never sends
-for a site what the site could not send itself. A route that is gone, or names another account, ends
-the link (the chat is told, the record deleted); `/unlink` deletes both. Linking an account again ends
-its previous link. A linked account may send 60 messages an hour (`{bot site}:gnode:comms:rate:<operator>:<hour>`);
-beyond that the bot says so and relays nothing. `src/inbound/web_link.rs`, `src/main.rs` (`web_subscriber`)
-
-**Who reaches the inbound loop.** The receiver passes operator admins (`COMMS_ADMIN_IDS`) as before,
-and in a private chat anyone else only for `/start <site>-<CODE>`, `/link …`, `/unlink`, or once
-linked; callbacks and groups stay admin-only. A linked person's commands reach no router; an admin
-who linked their own account keeps their commands, and their free text continues their window.
-
-### 1.2c The admin bot (`COMMS_ADMIN_BOT=true`): the Geodineum bot after the split
-
-With the switch on, the bot COMMS polls carries the constellation's alerts, grant requests and polls and nothing
-conversational: no pipelines, sessions or inference, no window links (§1.2a is off: `/start <site>-<CODE>`, `/link`
-and `/unlink` reach nobody, and an addressed `to: {telegram}` is refused `no_bot`). Only the operators in
-`COMMS_ADMIN_IDS` pass the receiver; the switch without that list answers nobody and says so at startup. What the
-operators get: `/status`, `/help`, replies to alerts (`QUARANTINE`, `DISMISS`, `RETRY`, …), workflow intents, poll
-and grant buttons (a grant press is left on the inbound stream for `geodineum grants watch`, answered once). Everything
-else is answered with where conversations live (GeodineBot, in Geodine). Its menu is `/status` and `/help`.
-
-The bot site is `geodineum` (`COMMS_INBOUND_SITE`), whose `{geodineum}:comms:config` holds the token as
-`channels.telegram`; only COMMS and operators may read that key. `scripts/geodineum-bot-cutover.sh` moves COMMS from
-GeodineBot to the Geodineum bot on aesir (preflight reads only; cutover and rollback prompt for the token and never
-print it): the Telegram channel moves between the two sites' settings, the env file gets the token, the site and the
-switch, and COMMS and the grants watch restart. One token has one poller: GeodineBot is silent from the cutover until
-Geodine polls it on squad. Every Bot API call goes through `COMMS_TELEGRAM_API` (default `https://api.telegram.org`;
-a proof points it at `tests/fake_telegram.py`). Proof: `scripts/admin-bot-proof.sh` (57 checks, real binary, real grant).
+The bot site's `{geodineum}:comms:config` holds the token as `channels.telegram`; only COMMS and operators may read
+that key. Every Bot API call goes through `COMMS_TELEGRAM_API` (default `https://api.telegram.org`; a proof points it
+at `tests/fake_telegram.py`). COMMS writes no site's command stream (`*:gnode:unified:*` is not in its grant).
+Proof: `scripts/admin-bot-proof.sh` (real binary, the grant as `install.sh` ships it, a fake Bot API).
 
 ### 1.2b The watch and the ledger (the failsafe)
 
@@ -255,7 +227,7 @@ objects).
 | `content` | rec | JSON string | `{"subject","body","attachments":{}}`. **Has a fallback**: if absent/unparseable, the daemon synthesizes content from flat `subject` / `body` (or `message`) fields (Tera templates are then skipped). (See §7.) |
 | `metadata` | opt | JSON string | Free-form object, e.g. `{"form_type","source_url","callback_stream","reply_options"}`. |
 | `dispatch` | opt | JSON string | Producer-minimal: every field is defaulted, so `{"channels":["email"]}` or even `{}` is valid — `status`/`attempts` are COMMS bookkeeping, never producer-supplied (a required `status` once made producer JSON fail deserialization and silently drop the whole block). `channels` overrides site routing when present and non-empty; **never send an empty `channels` array** (falls through to all enabled channels). `reply_markup` (optional JSON) passes through verbatim to Telegram as an inline keyboard and is ignored by other channels — how a notification becomes answerable from a phone. Sentinel channel (below) records without sending. |
-| `to` | opt | JSON string | `{"email","name"?}`, `{"telegram": "<consumer>"}` or `{"operator": true}` — the ONE person this message is for. `operator`: by **Telegram only**, with the bot site's channel, to the chat in that channel's own config (no site names a chat or holds the token). Only types `change_request` and `lead`, 50 a day per site together, counted under the bot site's tag: the site's own settings and counters do not apply because the site can write them. The site's `reply_markup` is dropped (a button in that chat can approve a grant) and the body starts with the site id. Skip markers `addressed_type_refused`, `addressed_cap`, `no_bot`. A `telegram` recipient is a web subscriber of the sending site: delivered by **Telegram only**, with the bot site's channel (`COMMS_INBOUND_SITE`), to the chat COMMS's own link record (§1.2a) gives for that site and consumer, never to a chat the site names; same type gate and daily cap as email; skip markers `not_linked`, `no_bot`. An `email` recipient is delivered by **email only**, to that address only, never to the site's configured recipients. Refused (archived as skipped, not retried) unless the site allows the `type` in `addressed.types` (default `["planning"]`), the address parses as one mailbox (a CR/LF or a second address is refused), and the site has sent fewer than `addressed.daily_cap` (default 200) today (UTC, counter `{site_id}:comms:stats:addressed:YYYYMMDD`, counted only on a real send). The DTAP gate still applies. Skip markers: `addressed_type_refused`, `addressed_invalid`, `addressed_cap`. |
+| `to` | opt | JSON string | `{"email","name"?}` or `{"operator": true}` — the ONE person this message is for. `operator`: by **Telegram only**, with the bot site's channel, to the chat in that channel's own config (no site names a chat or holds the token). Only types `change_request` and `lead`, 50 a day per site together, counted under the bot site's tag: the site's own settings and counters do not apply because the site can write them. The site's `reply_markup` is dropped (a button in that chat can approve a grant) and the body starts with the site id. Skip markers `addressed_type_refused`, `addressed_cap`, `no_bot`. A `telegram` recipient (a person's chat) is refused, skip marker `person_not_here`: a person is reached through GeodineBot (Geodine's `tg_send`). |
 
 Channels: `email`, `telegram`, `sms`. Sentinel (record-only, no outbound send —
 message still lands on the stream and archives as skipped): `record`, `log`,
@@ -436,7 +408,6 @@ Remaining low-severity code-hardening notes (no contract drift, behaviour is cor
    routing decisions use the top-level `message.environment` field. If they
    differ, the audit record may not match the value that drove the gate.
 
-8. **Inbound subsystem contract is incomplete.** `ConversationState` /
-   `InferenceChainConfig` are loaded from ValKey (`{site_id}:comms:conversations:*`,
-   `{site_id}:inference:history:*`) with **no wire-format spec** — the inbound
-   (two-way Telegram) subsystem is beta for Ch.1 and undocumented here.
+8. **Reply contexts have no wire spec beyond §4.3.** `{site_id}:comms:context:<id>` and
+   `{site_id}:comms:active_context:<chat>` (24 h) are COMMS's own; a typed reply resolves only against
+   contexts of the bot site, while poll buttons carry their site.

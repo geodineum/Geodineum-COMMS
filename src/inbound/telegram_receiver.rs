@@ -157,8 +157,6 @@ pub struct TelegramReceiver {
     /// intended behavior when an operator sets the env var to a
     /// mis-parsed value (e.g. `junk,stuff`).
     admin_ids: Option<Vec<i64>>,
-    /// The admin bot: only the listed operators pass, nobody reaches it to link a window
-    admin_bot: bool,
     /// Bot's own username (populated on first getMe call)
     bot_username: Option<String>,
     /// Bot's own user_id (populated on first getMe call). an earlier hardening pass:
@@ -187,15 +185,9 @@ impl TelegramReceiver {
             site_id,
             environment,
             admin_ids,
-            admin_bot: false,
             bot_username: None,
             bot_user_id: None,
         }
-    }
-
-    pub fn with_admin_bot(mut self, admin_bot: bool) -> Self {
-        self.admin_bot = admin_bot;
-        self
     }
 
     /// Get the inbound stream key for this site
@@ -311,22 +303,12 @@ impl TelegramReceiver {
     /// Register bot commands with BotFather (shows in Telegram UI)
     pub async fn register_commands(&self) -> Result<()> {
         let url = format!("{}/setMyCommands", self.api_base);
-        let commands = if self.admin_bot { serde_json::json!({
+        let commands = serde_json::json!({
             "commands": [
                 {"command": "status", "description": "System status"},
                 {"command": "help", "description": "Show available commands"},
             ]
-        }) } else { serde_json::json!({
-            "commands": [
-                {"command": "start", "description": "Start / show menu"},
-                {"command": "reset", "description": "Reset conversation"},
-                {"command": "history", "description": "View conversation history"},
-                {"command": "pipeline", "description": "Switch active pipeline"},
-                {"command": "status", "description": "System status"},
-                {"command": "help", "description": "Show available commands"},
-                {"command": "unlink", "description": "Stop continuing your Geodine window here"},
-            ]
-        }) };
+        });
 
         self.client
             .post(&url)
@@ -476,7 +458,7 @@ impl TelegramReceiver {
                     let user_id: i64 = inbound.operator_id.parse().unwrap_or(0);
                     // an earlier hardening pass fail-closed gate (see above).
                     let unauthorized = matches!(&self.admin_ids, Some(allowed) if !allowed.contains(&user_id));
-                    if unauthorized && (self.admin_bot || !self.web_subscriber_may_pass(&inbound).await) {
+                    if unauthorized {
                         debug!(
                             operator_id = %inbound.operator_id,
                             "Ignoring message from unauthorized user"
@@ -496,17 +478,6 @@ impl TelegramReceiver {
         }
 
         Ok(count)
-    }
-
-    /// Someone outside the operator list, in a private chat, may reach COMMS only to link or unlink a
-    /// web subscriber (the Geodine window), or once linked; what they may do then is decided in the
-    /// inbound loop (their messages go to their own window's conversation, never to the operator's).
-    async fn web_subscriber_may_pass(&mut self, msg: &InboundMessage) -> bool {
-        use crate::inbound::web_link;
-        msg.chat_type == "private"
-            && (web_link::parse_link(&msg.text).is_some()
-                || web_link::is_unlink(&msg.text)
-                || web_link::is_linked(&mut self.conn, &self.site_id, &msg.operator_id).await)
     }
 
     /// Parse a Telegram message into a channel-agnostic InboundMessage

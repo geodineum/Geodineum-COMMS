@@ -37,25 +37,20 @@ spam_filter:
   # IP addresses to block
   ip_blocklist: []
 
-# ── Inbound: Bidirectional Telegram integration ──────────────────────
-# Enables operator interaction via Telegram (TheGlobe conversation engine).
+# ── Inbound: the Geodineum bot (operators only) ──────────────────────
+# Alerts, grant requests, polls and /status for the operators; conversations are GeodineBot's (Geodine).
 #
 # Secrets should be supplied via the env file (NOT this YAML), which lives at:
 #   /etc/geodineum/components/geodineum-comms/geodineum-comms.env
 #
 # Supported env vars (override any YAML values):
 #   TELEGRAM_BOT_TOKEN        — bot token from @BotFather
-#   COMMS_INBOUND_SITE        — site_id to bind to (default: geodine)
-#   COMMS_INBOUND_PIPELINE    — default pipeline (default: sysadmin)
-#   COMMS_ADMIN_IDS           — comma-separated Telegram user IDs
-#   COMMS_INFERENCE_CHAIN     — "true" to enable the staged draft→review→guard chain
-#   COMMS_ADMIN_BOT           — "true": the admin bot (alerts, grants, polls, /status; no conversations)
+#   COMMS_INBOUND_SITE        — the bot's site (default: geodineum)
+#   COMMS_ADMIN_IDS           — the operators' Telegram user IDs (unset: the bot answers nobody)
 #   COMMS_TELEGRAM_API        — Bot API base URL (default https://api.telegram.org; proofs point it at a fake)
 #
 # Inbound activates automatically when TELEGRAM_BOT_TOKEN is set. This YAML
 # section is optional — it exists only to document non-secret defaults.
 #
 # inbound:
-#   site_id: geodine
-#   default_pipeline: sysadmin
-#   inference_chain_enabled: false
+#   site_id: geodineum

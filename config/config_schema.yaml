@@ -9,56 +9,27 @@ entries:
     type: path
     default: /var/lib/geodineum-comms
     mutable: false
-    description: Persistent data root (per-site SQLite message DBs, retry queue, conversation state). Matches the binary default (src/main.rs::get_data_dir) and the unit's ReadWritePaths.
+    description: Persistent data root (per-site SQLite message DBs, retry queue). Matches the binary default (src/main.rs::get_data_dir) and the unit's ReadWritePaths.
 
   - key: COMMS_INBOUND_SITE
     type: string
-    default: ""
+    default: geodineum
     mutable: true
-    description: Default site_id for inbound messages without explicit routing.
-
-  - key: COMMS_INBOUND_PIPELINE
-    type: string
-    default: default
-    mutable: true
-    description: Named inbound pipeline config to load at startup.
+    description: The Geodineum bot's site (its inbound stream and its Telegram channel in {site}:comms:config).
 
   - key: COMMS_ADMIN_IDS
     type: string
     default: ""
     mutable: true
     description: >-
-      Comma-separated Telegram user IDs with admin privileges for
-      /admin commands in the Telegram bridge.
-
-  - key: COMMS_INFERENCE_CHAIN
-    type: bool
-    default: false
-    mutable: true
-    description: >-
-      Enables the staged inference chain (draft -> review -> guard
-      stages instead of single-pipeline direct inference).
-
-  - key: COMMS_ADMIN_BOT
-    type: bool
-    default: false
-    mutable: true
-    description: >-
-      The admin bot: alerts, grant requests, polls, workflow intents,
-      /status and /help for the operators in COMMS_ADMIN_IDS. No
-      conversations, no window links. Set by the cutover script.
+      Comma-separated Telegram user IDs of the operators the bot answers;
+      unset or empty, it answers nobody.
 
   - key: COMMS_TELEGRAM_API
     type: string
     default: https://api.telegram.org
     mutable: false
     description: Bot API base URL; a proof points it at a fake server.
-
-  - key: INFERENCE_TIMEOUT
-    type: int
-    default: 30
-    mutable: true
-    description: Inference-call wall-clock timeout (seconds).
 
   - key: TELEGRAM_BOT_TOKEN
     type: string

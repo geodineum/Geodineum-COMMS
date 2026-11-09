@@ -61,8 +61,8 @@ pub struct AddressedTo {
     pub email: String,
     #[serde(default)]
     pub name: Option<String>,
-    /// A web subscriber (consumer id) of the sending site: delivered by Telegram to the account
-    /// linked to that consumer (inbound::web_link), never to an address the site names.
+    /// A person's Telegram: refused since 2026-11-09 (`telegram (person_not_here)`); a person is reached through
+    /// GeodineBot (Geodine's tg_send), the operators with `operator`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telegram: Option<String>,
     /// The operators, in the chat of the bot site's own channel: no site names a chat or holds the token.

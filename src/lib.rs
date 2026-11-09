@@ -41,10 +41,7 @@ pub use config::Config;
 pub use consumer::{SiteDiscovery, StreamConsumer};
 pub use error::{CommsError, Result};
 pub use filters::SpamFilter;
-pub use inbound::{
-    CommandAction, CommandRouter, ConversationState, PollRequest, TelegramReceiver,
-    send_processing_indicator, spawn_response_poller,
-};
+pub use inbound::{CommandAction, CommandRouter, ConversationState, TelegramReceiver};
 pub use retry::RetryManager;
 pub use router::MessageDispatcher;
 pub use settings::{SettingsStore, SiteSettings};

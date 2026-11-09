@@ -12,7 +12,6 @@ Notification daemon. gNode=Sun, ValKey=common backend. Stateless/state-aware: co
 - stream keys (braces LITERAL = Cluster hash-tag):
   - IN  `{site_id}:gnode:comms:{env}` — outbound dispatch queue (consume)
   - OUT `{site_id}:gnode:comms:inbound:{env}` — operator replies (produce)
-  - OUT `{site}:gnode:unified:{env}` — a linked web subscriber's Telegram message as the site's own relayed `direct` (`_rt geodine`, `via telegram`)
   - KV `{site}:gnode:comms:link:<CODE>` (site's code → COMMS answer) · `{site}:gnode:comms:tg:<consumer>` (site's route, COMMS adds operator/chat) · `{bot}:gnode:comms:web:<operator>` (COMMS's record = authority)
   - OUT `{site_id}:gnode:comms:workflows:{env}` — workflow requests (produce)
   - CFG `{site_id}:comms:config` — ValKey STRING (single JSON `SiteSettings`, NOT a hash)
@@ -30,7 +29,7 @@ Notification daemon. gNode=Sun, ValKey=common backend. Stateless/state-aware: co
 - discovery: periodic `maybe_rediscover` `stream_reader.rs` every `discovery_interval_secs` (default 60, 0=startup-only `config.rs`)
 - spam: visitor messages only (sender.email or non-loopback ip); score ≥0.7: ip 1.0 · email domain 0.8 · scattered address (≥5 pieces, ≥4 one-letter) 0.5 · gibberish name 0.5 · gibberish/random subject 0.4 · ≥3 links 0.4 · keyword as whole word 0.3; no weak signal alone (dots never spam by themselves); site `filters.spam_enabled` → built-ins + site lists, `spam_action` flag (deliver, `[spam?]` subject) | quarantine (archive spam, no dispatch) | reject = gCore `drop` (neither); else daemon-wide `spam_filter` (YAML additive, ON since 2026-11-09) quarantines; `messages <site> --status spam` lists held
 - CLI enum: `config.rs` (start|stop*|status*|test|encrypt*|sites|messages|stats|message|retry|cleanup|db-stats; *=print-only stub `main.rs`)
-- entry: `main.rs`, main loop spawns StreamConsumer + RetryManager(XAUTOCLAIM + post-ACK re-dispatch) + TelegramReceiver + response_poller
+- entry: `main.rs`, main loop spawns StreamConsumer + RetryManager(XAUTOCLAIM + post-ACK re-dispatch) + TelegramReceiver
 - dispatch field: producer-minimal (ALL fields defaulted; `{}` valid); `reply_markup` → telegram inline keyboard verbatim, other channels ignore. Buttons answered via answerCallbackQuery AFTER stream write (ack = recorded, not received).
 - liveness: SETEX `{ns}:gnode:heartbeat:{env}:comms:{node}` 120 (node = short hostname; CONTRACTS/heartbeat.md)
 
@@ -42,10 +41,9 @@ Rust + tokio 1.35 async (full). clap 4.4 CLI. Modules:
 - `channels/` — `NotificationChannel` trait → Email(lettre 0.11 SMTP) | Telegram(reqwest 0.12 Bot API) | SMS(Twilio REST)
 - `persistence/` — `MessageStore` r2d2 SQLite pool, per-site isolation
 - `settings/` — `SettingsStore` ValKey-backed + in-mem RwLock cache
-- `inbound/` — `TelegramReceiver` long-poll getUpdates + CommandRouter + ConversationState + SPR engine + `WorkflowDispatcher` + response_poller [BETA, undocumented schema]
+- `inbound/` — `TelegramReceiver` long-poll getUpdates + CommandRouter + ConversationState (reply contexts) + `WorkflowDispatcher` [BETA, undocumented schema]
 - failsafe: email Message-ID `<comms.<id>@domain>`; archive records per-channel provider answer (`queued as`); `watch` (hourly timer, user geodineum-comms + group adm) = heartbeat + failed|partial_sent|skipped receipts of all production sites + daily summary mail through COMMS read back from mail.log (signed, delivered) + daily "all well" + nightly jobs' `/var/lib/geodineum-watch/<job>.status` (what/max_age_h/ok_ms/run_ms/error: failed run → once, no success in max_age_h → daily); alerts straight to Telegram; state `{bot}:gnode:comms:watch`; `ledger <site>` = archive + mail log
-- admin bot (`COMMS_ADMIN_BOT=true`, site `geodineum`): alerts + grants + polls + workflow intents + /status /help ONLY; no conversation, no link_site (addressed telegram → `no_bot`), no §1.2a; receiver passes `COMMS_ADMIN_IDS` only (empty list → answers nobody, logged); menu /status /help; other text → "no conversations, GeodineBot"; grant press answered once, left for `grants watch`; cutover `scripts/geodineum-bot-cutover.sh` preflight|cutover|rollback (token at a prompt; channel moves `{geodine}`↔`{geodineum}` settings; env + restart); `COMMS_TELEGRAM_API` = Bot API base; proof `scripts/admin-bot-proof.sh` 57/57 (real binary + real grant + `tests/fake_telegram.py`)
-- `inbound/web_link.rs` — a web subscriber's Telegram: `/start <site>-<CODE>`|`/link` → record + route + answer; message → site-stream `direct` (daemon checks reach); `/unlink`; gate: non-admin passes receiver only private + (link|unlink|linked); linked non-admin commands → no router; 60 msgs/h per account (`{bot}:gnode:comms:rate:<op>:<hour>`)
+- the Geodineum bot (site `geodineum`, default): operators in `COMMS_ADMIN_IDS` only (none → answers nobody, logged); alerts + grants + polls + workflow intents + /start /status /help; other text → "no conversations, GeodineBot"; grant press answered once, left for `grants watch`; `to:{telegram}` → `person_not_here`; no write on any `*:gnode:unified:*`; `COMMS_TELEGRAM_API` = Bot API base; proof `scripts/admin-bot-proof.sh` (real binary + install.sh grant + `tests/fake_telegram.py`); Geodine paths archived ~/gh/ARCHIVE/Geodineum-COMMS-geodine-paths-2026-11-09
 - `dtap/` — is_production + environment_from_stream_key
 - `templates/` — Tera per-channel · `cli/` — output formatters
 KEY design: durable-write-fence (`XACK` ONLY after SQLite ok → crash-safe via group rebalance) · fail-safe DTAP (unknown/missing env → non-prod → no real send) · per-site `DispatchRateLimiter` sliding-window 100/60s, MAX_TRACKED_SITES=1024 hard-cap (anti-OOM) · brace-literal hash-tags for Cluster co-location · exp backoff 30s→1h · post-ACK channel retry (XRANGE re-fetch from stream history, failed-channels-only re-dispatch, success→archive `sent`, trimmed→abandon+warn) · periodic site re-discovery (discovery_interval_secs=60 default, 0=startup-only).
@@ -86,7 +84,7 @@ alert distribution (type=alert pri 1-2 → multi-channel) · contact-form ingest
 - `callback_stream` UNVALIDATED → malformed value written as-is, can misroute.
 - archived env (from metadata.environment, `store.rs`) MAY diverge from routing env (top-level field) → audit confusion.
 - data-dir default: `/var/lib/geodineum-comms` (schema + binary + unit aligned 2026-06-22).
-- inbound subsystem BETA; ConversationState/inference keys `{site_id}:comms:conversations:*` undocumented, no wire-spec.
+- reply contexts `{site}:comms:context:*` + `{site}:comms:active_context:*` (24 h): no wire spec beyond §4.3; typed replies resolve only on the bot site
 - NO per-daemon admin UI/API: operator surface = wp-admin (Geodineum→Comms) + `geodineum comms` CLI; former src/api retired (git history).
 - CLI stop|status|encrypt = print-only stubs (`main.rs`); NO encryption anywhere → per-site creds stored plain in ValKey (ACL-gated).
 - SMTP no conn-pool (fresh transport/send) · Telegram long-poll only (no webhook) · single-env per daemon (`--environment` one tier) · SQLite no at-rest encryption (relies on LUKS+perms) · DTAP tiers hardcoded.

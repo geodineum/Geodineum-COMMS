@@ -306,19 +306,10 @@ impl Default for Config {
 pub struct InboundConfig {
     /// Telegram bot token for inbound polling
     pub bot_token: Option<String>,
-    /// Site ID to bind inbound to (default: "geodine")
+    /// Site ID to bind inbound to (default: "geodineum", the Geodineum bot's site)
     pub site_id: Option<String>,
-    /// Default pipeline for new conversations (default: "sysadmin")
-    pub default_pipeline: Option<String>,
     /// Authorized Telegram user IDs (empty = allow all)
     pub admin_ids: Option<Vec<i64>>,
-    /// Enable the staged inference chain (draft → review → guard)
-    /// When false, uses single-pipeline direct inference (default)
-    #[serde(default)]
-    pub inference_chain_enabled: Option<bool>,
-    /// The admin bot: alerts, grants, polls and /status only; no conversations, no window links
-    #[serde(default)]
-    pub admin_bot: Option<bool>,
 }
 
 impl InboundConfig {
@@ -327,11 +318,8 @@ impl InboundConfig {
     ///
     /// Env vars:
     ///   TELEGRAM_BOT_TOKEN    — bot token from @BotFather
-    ///   COMMS_INBOUND_SITE    — site_id to bind to (default "geodine")
-    ///   COMMS_INBOUND_PIPELINE — default pipeline (default "sysadmin")
+    ///   COMMS_INBOUND_SITE    — site_id to bind to (default "geodineum")
     ///   COMMS_ADMIN_IDS       — comma-separated Telegram user IDs
-    ///   COMMS_INFERENCE_CHAIN — "true" to enable the staged chain
-    ///   COMMS_ADMIN_BOT       — "true": the admin bot, nothing conversational
     pub fn merge_env(&mut self) {
         if let Ok(token) = std::env::var("TELEGRAM_BOT_TOKEN") {
             if !token.is_empty() {
@@ -341,11 +329,6 @@ impl InboundConfig {
         if let Ok(site) = std::env::var("COMMS_INBOUND_SITE") {
             if !site.is_empty() {
                 self.site_id = Some(site);
-            }
-        }
-        if let Ok(pipeline) = std::env::var("COMMS_INBOUND_PIPELINE") {
-            if !pipeline.is_empty() {
-                self.default_pipeline = Some(pipeline);
             }
         }
         // fail-closed on set-but-parses-empty.
@@ -373,12 +356,6 @@ impl InboundConfig {
                 );
             }
             self.admin_ids = Some(parsed);
-        }
-        if let Ok(v) = std::env::var("COMMS_INFERENCE_CHAIN") {
-            self.inference_chain_enabled = Some(v.eq_ignore_ascii_case("true") || v == "1");
-        }
-        if let Ok(v) = std::env::var("COMMS_ADMIN_BOT") {
-            self.admin_bot = Some(v.eq_ignore_ascii_case("true") || v == "1");
         }
     }
 

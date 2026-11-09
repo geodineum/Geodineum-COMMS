@@ -1,5 +1,5 @@
 #!/bin/bash
-# The admin bot and the cutover script, proven with the real COMMS binary under COMMS's real ACL grant, against a
+# The Geodineum bot, proven with the real COMMS binary under COMMS's real ACL grant (as install.sh ships it), against a
 # throwaway ValKey and a fake Bot API, both on localhost ports of their own. Touches nothing live; needs no root.
 #   bash scripts/admin-bot-proof.sh
 set -uo pipefail
@@ -186,29 +186,25 @@ outbound() { # <site> <metadata json> [to json]
 settle() { sleep "${1:-2}"; }
 
 # =========================================================================================================================
-echo "--- switch off: what a deploy of this code does today"
+echo "--- the old configuration (site geodine, the old token, no switch): no conversation is left to reach"
 set_settings geodine "$W/tok.legacy"
-mkenv "$W/env.off" "$W/tok.legacy" COMMS_ADMIN_IDS=1 COMMS_INBOUND_SITE=geodine
-comms "$W/env.off"
+mkenv "$W/env.old" "$W/tok.legacy" COMMS_ADMIN_IDS=1 COMMS_INBOUND_SITE=geodine
+comms "$W/env.old"
 until_ 100 has_group '{geodine}:gnode:comms:inbound:production' || die "COMMS never joined its inbound stream: $(tail -5 "$W/comms.log")"
 settle 1
-msg 111111 1 "hello model"; settle
-check "free text from the operator still goes to Geodine" "$(vk XLEN '{geodine}:gnode:unified:production')" 1
-check "its consumer is still comms:<operator>" "$(vk XRANGE '{geodine}:gnode:unified:production' - + | grep -c 'comms:1')" 1
-msg 111111 1 "/pipeline aurelius"; settle
-check "/pipeline still switches" "$(said 1 'Pipeline switched')" 1
+msg 111111 1 "hello model"; msg 111111 1 "/pipeline aurelius"; settle
+check "free text and /pipeline: told where to go" "$(said 1 'no conversations')" 2
+check "nothing reaches Geodine's stream" "$(vk EXISTS '{geodine}:gnode:unified:production')" 0
 msg 111111 2 "/link geodineum_com-ABCDEFGH23"; settle
-check "a stranger may still try a window link" "$(said 2 'expired')" 1
-msg 111111 2 "hello"; settle
-check "a stranger's free text still goes nowhere" "$(said 2 'expired'):$(calls sendMessage chat_id=2)" 1:1
+check "a stranger cannot try a window link any more" "$(calls sendMessage chat_id=2)" 0
 stop_comms
 
-echo "--- switch on, site geodineum"
+echo "--- the Geodineum bot, site geodineum"
 set_settings geodineum "$W/tok.admin"
 vk DEL '{geodine}:comms:config' >/dev/null
 : > "$S/calls.jsonl"; U0="$(vk XLEN '{geodine}:gnode:unified:production')"
 vk SET '{geodineum}:gnode:comms:web:2' '{"site":"geodineum_com","consumer":"web:0123456789abcdef","chat":"2","at_ms":1}' >/dev/null
-mkenv "$W/env.on" "$W/tok.admin" COMMS_ADMIN_IDS=1 COMMS_INBOUND_SITE=geodineum COMMS_ADMIN_BOT=true
+mkenv "$W/env.on" "$W/tok.admin" COMMS_ADMIN_IDS=1 COMMS_INBOUND_SITE=geodineum
 comms "$W/env.on"
 until_ 100 has_group '{geodineum}:gnode:comms:inbound:production' || die "COMMS never joined its inbound stream: $(tail -5 "$W/comms.log")"
 settle 1
@@ -257,14 +253,14 @@ vk SET '{alpha_site}:comms:config' '{"site_id":"alpha_site","enabled":true,"chan
 vk SET '{geodineum}:gnode:comms:web:9' '{"site":"alpha_site","consumer":"web:0123456789abcdef","chat":"9","at_ms":1}' >/dev/null
 : > "$S/calls.jsonl"
 outbound alpha_site '{"form_type":"proof"}' '{"telegram":"web:0123456789abcdef"}'; settle 4
-check "a window's addressed Telegram message is refused: nobody's chat gets it" "$(calls sendMessage)" 0
+check "a Telegram message addressed to a person is refused: nobody's chat gets it" "$(calls sendMessage)" 0
 check "only the admin bot's token was ever used" "$(foreign_calls "$ADMIN_SHA")" 0
 check "COMMS hit no ACL refusal" "$(grep -c NOPERM "$W/comms.log")" 0
 stop_comms
 
-echo "--- switch on, no operators listed"
+echo "--- no operators listed"
 : > "$W/comms.log"; : > "$S/calls.jsonl"
-mkenv "$W/env.nobody" "$W/tok.admin" COMMS_INBOUND_SITE=geodineum COMMS_ADMIN_BOT=true
+mkenv "$W/env.nobody" "$W/tok.admin" COMMS_INBOUND_SITE=geodineum
 comms "$W/env.nobody"
 settle 3
 msg 222222 1 "/status"; settle
@@ -272,51 +268,6 @@ check "fail-closed: nobody is answered" "$(calls sendMessage)" 0
 check "fail-closed: the log says why" "$(grep -c 'answers nobody' "$W/comms.log")" 1
 stop_comms
 
-# =========================================================================================================================
-echo "--- the cutover script, in a sandbox: no systemctl, its own env file, this ValKey"
-CUT="$ROOT/scripts/geodineum-bot-cutover.sh"
-EF="$W/etc/comms.env"; mkdir -p "$W/etc"
-{ printf 'COMMS_ADMIN_IDS=1\nTELEGRAM_BOT_TOKEN=%s\nOTHER=kept\n' "$(<"$W/tok.legacy")"; } > "$EF"; chmod 0640 "$EF"
-vk DEL '{geodineum}:comms:config' '{alpha_site}:comms:config' >/dev/null
-set_settings geodine "$W/tok.legacy"
-run() { CUTOVER_SANDBOX=1 COMMS_ENV_FILE="$EF" CUTOVER_VALKEY_PASSWORD_FILE="$W/admin.pw" VALKEY_PORT=$P COMMS_TELEGRAM_API="http://127.0.0.1:$TP" CUTOVER_COMMS_BIN="$COMMS" ENVIRONMENT=production bash "$CUT" "$@"; }
-OUT="$W/cut.out"
-run preflight > "$OUT" 2>&1; check "preflight passes on a clean setup" "$?" 0
-check "preflight prints no token" "$(leaks "$OUT")" 0
-check "preflight names the bot it polls" "$(grep -c 'polling: @proof_111111_bot' "$OUT")" 1
-set_settings some_site "$W/tok.legacy"
-run preflight > "$OUT" 2>&1; check "preflight stops when a website holds the token COMMS polls" "$?" 1
-vk DEL '{some_site}:comms:config' >/dev/null
-{ echo yes; cat "$W/tok.legacy"; echo; echo; } | run cutover > "$OUT" 2>&1
-check "cutover refuses GeodineBot's own token" "$(grep -c 'already polls' "$OUT")" 1
-check "...and changed nothing" "$(env_token_sha "$EF")" "$LEGACY_SHA"
-mkdir -p "$S/222222"; touch "$S/222222/.not_started"
-{ echo yes; cat "$W/tok.admin"; echo; echo; } | run cutover > "$OUT" 2>&1
-check "cutover stops when Start was not pressed" "$(grep -c 'could not write to chat' "$OUT")" 1
-check "...and changed nothing" "$(vk EXISTS '{geodineum}:comms:config'):$(env_token_sha "$EF")" "0:$LEGACY_SHA"
-rm -f "$S/222222/.not_started"
-{ echo yes; cat "$W/tok.admin"; echo; echo; } | run cutover > "$OUT" 2>&1; rc=$?
-check "cutover runs" "$rc" 0
-check "cutover prints no token" "$(leaks "$OUT")" 0
-check "the env file carries the new token and nothing of the old" "$(env_token_sha "$EF"):$(grep -c TELEGRAM_BOT_TOKEN "$EF")" "$ADMIN_SHA:1"
-check "the site and the switch are set, the rest kept" "$(env_value "$EF" COMMS_INBOUND_SITE):$(env_value "$EF" COMMS_ADMIN_BOT):$(env_value "$EF" OTHER)" geodineum:true:kept
-check "the env file keeps its mode" "$(stat -c %a "$EF")" 640
-check "the old site's settings hold no Telegram channel any more" "$(settings_token_sha geodine):$(vk EXISTS '{geodine}:comms:config')" none:1
-check "the bot site's settings hold the new token and name their site" "$(settings_token_sha geodineum):$(settings_field geodineum site_id)" "$ADMIN_SHA:geodineum"
-# COMMS as the unit would start it from the rewritten env file: that file's lines on top of the proof's base lines
-env_value "$EF" TELEGRAM_BOT_TOKEN > "$W/tok.cut"
-mapfile -t extra < <(grep -v '^TELEGRAM_BOT_TOKEN=' "$EF")
-mkenv "$W/env.cut" "$W/tok.cut" "${extra[@]}"
-: > "$S/calls.jsonl"
-comms "$W/env.cut"; settle 3
-check "COMMS started from that env file polls the new bot only" "$(polls_only "$ADMIN_SHA")" yes
-check "...as the admin bot" "$(menu_size)" 2
-stop_comms
-{ echo yes; cat "$W/tok.legacy"; echo; } | run rollback > "$OUT" 2>&1; check "rollback runs" "$?" 0
-check "rollback prints no token" "$(leaks "$OUT")" 0
-check "rollback: env back on GeodineBot, site geodine, switch gone" "$(env_token_sha "$EF"):$(env_value "$EF" COMMS_INBOUND_SITE):$(grep -c COMMS_ADMIN_BOT "$EF")" "$LEGACY_SHA:geodine:0"
-check "rollback: the admin token is off the bot site's settings" "$(settings_token_sha geodineum)" none
-check "rollback: GeodineBot's channel is back on its site" "$(settings_token_sha geodine)" "$LEGACY_SHA"
 check "no token ever reached the fake API's log" "$(leaks "$S/calls.jsonl")" 0
 
 echo; echo "passed $pass, failed $failed"

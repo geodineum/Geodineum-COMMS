@@ -13,9 +13,7 @@ use geodineum_comms::{
     consumer::{SiteDiscovery, StreamConsumer},
     filters::SpamFilter,
     inbound::{
-        CommandAction, CommandRouter, ConversationState, PollRequest,
-        InferenceChainConfig, TelegramReceiver, WorkflowDispatcher,
-        send_processing_indicator, spawn_response_poller,
+        CommandAction, CommandRouter, ConversationState, TelegramReceiver, WorkflowDispatcher,
     },
     persistence::{BackoffTracker, MessageStatus, MessageStore, SpamRetentionPolicy},
     retry::RetryManager,
@@ -141,7 +139,7 @@ async fn main() -> anyhow::Result<()> {
             let mut conn = client.get_multiplexed_tokio_connection().await?;
             let admin_first = std::env::var("COMMS_ADMIN_IDS").ok().and_then(|v| v.split(',').next().map(|s| s.trim().to_string())).filter(|s| !s.is_empty());
             let opts = geodineum_comms::watch::WatchOptions {
-                site: config.inbound.as_ref().and_then(|i| i.site_id.clone()).unwrap_or_else(|| "geodine".into()),
+                site: config.inbound.as_ref().and_then(|i| i.site_id.clone()).unwrap_or_else(|| "geodineum".into()),
                 environment: cli.environment.clone(),
                 topology: std::env::var("GNODE_TOPOLOGY_NAMESPACE").unwrap_or_else(|_| "geodineum".into()),
                 node: cli.node_id.as_deref().and_then(|n| n.split('.').next()).map(String::from).unwrap_or_else(hostname_short),
@@ -304,8 +302,6 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
     // Initialize consumer groups
     consumer.initialize_groups().await?;
 
-    let admin_bot = config.inbound.as_ref().and_then(|i| i.admin_bot).unwrap_or(false);
-
     // Create message dispatcher
     let dispatcher = MessageDispatcher::new(
         channel_registry.clone(),
@@ -313,13 +309,7 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
         cli.allow_nonprod_send,
         cli.delivery == geodineum_comms::config::Delivery::Off,
     );
-    let dispatcher = dispatcher.with_operator_site(config.inbound.as_ref().and_then(|i| i.site_id.clone()).unwrap_or_else(|| "geodine".to_string()));
-    // Without a link site an addressed Telegram message is refused: the admin bot carries no subscriber's mail.
-    let dispatcher = if admin_bot {
-        dispatcher
-    } else {
-        dispatcher.with_link_site(config.inbound.as_ref().and_then(|i| i.site_id.clone()).unwrap_or_else(|| "geodine".to_string()))
-    };
+    let dispatcher = dispatcher.with_operator_site(config.inbound.as_ref().and_then(|i| i.site_id.clone()).unwrap_or_else(|| "geodineum".to_string()));
 
     // Create spam filter: built-in blocklists extended by the YAML config
     // (spam_filter.keywords_blocklist / ip_blocklist were previously
@@ -336,47 +326,16 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
     // Initialize dispatch rate limiter (100 dispatches per 60s per site)
     let mut rate_limiter = DispatchRateLimiter::new(100, 60);
 
-    // ── Inbound: Telegram receiver + command router ──────────────────────
+    // ── Inbound: the Geodineum bot (alerts, grants, polls, workflow intents, /status) ──
     let cancel_token = CancellationToken::new();
-    let default_pipeline = config
-        .inbound
-        .as_ref()
-        .and_then(|i| i.default_pipeline.clone())
-        .unwrap_or_else(|| "sysadmin".to_string());
-    let mut conv_state = ConversationState::new(conn.clone(), default_pipeline.clone());
-
-    // Configure command router with the inference chain + workflow dispatch
-    let chain_enabled = config
-        .inbound
-        .as_ref()
-        .and_then(|i| i.inference_chain_enabled)
-        .unwrap_or(false);
-    let chain_config = InferenceChainConfig::from_env();
-
-    let inbound_site_id_for_wf = config
-        .inbound
-        .as_ref()
-        .and_then(|i| i.site_id.clone())
-        .unwrap_or_else(|| "geodine".to_string());
-    let workflow_dispatcher = WorkflowDispatcher::new(
-        &inbound_site_id_for_wf,
-        &cli.environment,
-    );
-
-    let command_router = CommandRouter::new()
-        .with_inference_chain(chain_enabled)
-        .with_workflow_dispatcher(workflow_dispatcher)
-        .with_admin_bot(admin_bot);
-
-    // Spawn Telegram inbound poller for each site that has Telegram configured
-    // with admin_ids. We check settings on startup; new sites discovered later
-    // require a daemon restart for INBOUND only — outbound picks them up via
-    // the periodic re-discovery (consumer.discovery_interval_secs).
+    let mut conv_state = ConversationState::new(conn.clone());
     let inbound_site_id = config
         .inbound
         .as_ref()
         .and_then(|i| i.site_id.clone())
-        .unwrap_or_else(|| "geodine".to_string());
+        .unwrap_or_else(|| "geodineum".to_string());
+    let command_router = CommandRouter::new()
+        .with_workflow_dispatcher(WorkflowDispatcher::new(&inbound_site_id, &cli.environment));
 
     let delivery_off = cli.delivery == geodineum_comms::config::Delivery::Off;
     let inbound_bot_token: Option<String> = if delivery_off {
@@ -388,13 +347,10 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
 
     if let Some(ref inbound_cfg) = config.inbound.as_ref().filter(|_| !delivery_off) {
         if let Some(ref bot_token) = inbound_cfg.bot_token {
-            // an earlier hardening pass: preserve the Option<Vec> shape rather than
-            // `.unwrap_or_default()` flattening, so the receiver can
-            // distinguish "not configured" (None) from "configured-empty"
-            // (Some(vec![]) → fail-closed).
+            // Only the listed operators: without COMMS_ADMIN_IDS the bot answers nobody (fail-closed).
             let mut admin_ids: Option<Vec<i64>> = inbound_cfg.admin_ids.clone();
-            if admin_bot && admin_ids.as_ref().map_or(true, |ids| ids.is_empty()) {
-                error!("COMMS_ADMIN_BOT is set without COMMS_ADMIN_IDS: fail-closed, the bot answers nobody");
+            if admin_ids.as_ref().map_or(true, |ids| ids.is_empty()) {
+                error!("COMMS_ADMIN_IDS is not set: fail-closed, the bot answers nobody");
                 admin_ids = Some(vec![]);
             }
 
@@ -404,8 +360,7 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
                 inbound_site_id.clone(),
                 cli.environment.clone(),
                 admin_ids,
-            )
-            .with_admin_bot(admin_bot);
+            );
 
             let child_cancel = cancel_token.clone();
             tokio::spawn(async move {
@@ -415,17 +370,6 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
             info!("Telegram inbound polling started for site {}", inbound_site_id);
         }
     }
-
-    // Inference timeout from env (INFERENCE_TIMEOUT). Default 7200s (2h): the
-    // local 35B (aurelius) generates a long reply at ~1 tok/s, so a full
-    // max_tokens response is a 40-60 min generation. The old 3000s (50 min)
-    // default abandoned replies that were still cooking (2026-07-26) — the
-    // operator would rather wait than lose the answer. Raise the env var if a
-    // pipeline can legitimately run longer.
-    let inference_timeout: u64 = std::env::var("INFERENCE_TIMEOUT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(7200);
 
     // Inbound stream consumer — reads from {site_id}:gnode:comms:inbound:{env}
     // (brace-literal hash-tag form for cluster-mode co-location).
@@ -1169,43 +1113,6 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
                             continue;
                         }
 
-                        // A web subscriber's Telegram (the Geodine window): /link, /unlink, and their
-                        // messages continue the web conversation through the site's own relay.
-                        if !admin_bot
-                            && fields.get("chat_type").map(|s| s.as_str()).unwrap_or("private") == "private"
-                            && fields.get("is_callback").map(|s| s.as_str()) != Some("true")
-                            && web_subscriber(&mut inbound_conn, &WebCtx {
-                                link_site: &inbound_site_id,
-                                environment: &cli.environment,
-                                node_id: &node_id,
-                                bot_token: inbound_bot_token.as_deref(),
-                                admin_ids: config.inbound.as_ref().and_then(|i| i.admin_ids.as_ref()),
-                                timeout_secs: inference_timeout,
-                            }, &text, &chat_id, &operator_id, &operator_name, conn.clone()).await
-                        {
-                            let _: redis::RedisResult<()> = redis::cmd("XACK")
-                                .arg(&inbound_stream_key)
-                                .arg("geodineum_comms_inbound")
-                                .arg(&entry_id)
-                                .query_async(&mut inbound_conn)
-                                .await;
-                            continue;
-                        }
-
-                        // Get or create conversation state (the admin bot has no conversations)
-                        let (pipeline, session_id) = if admin_bot {
-                            (String::new(), String::new())
-                        } else {
-                            match conv_state
-                                .get_or_create(&chat_id, &inbound_site_id, &operator_id, &operator_name)
-                                .await
-                            {
-                                Ok(s) => (s.pipeline.clone(), s.session_id.clone()),
-                                Err(_) => (default_pipeline.clone(), String::new()),
-                            }
-                        };
-
-                        // Build InboundMessage for routing
                         let inbound_msg = geodineum_comms::inbound::telegram_receiver::InboundMessage {
                             text: text.clone(),
                             chat_id: chat_id.clone(),
@@ -1220,9 +1127,8 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
                             callback_message_id: fields.get("callback_message_id").and_then(|s| s.parse().ok()),
                         };
 
-                        // Route the command
                         match command_router
-                            .route_command(&inbound_msg, &mut conv_state, &inbound_site_id, &pipeline, &session_id)
+                            .route_command(&inbound_msg, &mut conv_state, &inbound_site_id)
                             .await
                         {
                             Ok(action) => {
@@ -1232,87 +1138,17 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
                                     "Inbound: routed to action"
                                 );
                                 match action {
-                                    CommandAction::Local { command, params } => {
-                                        // an earlier hardening pass: command text comes from Telegram operator input;
-                                        // normalize before tracing to prevent log-line forgery.
+                                    CommandAction::Local { command } => {
+                                        // command text comes from Telegram operator input; normalized before tracing
                                         info!(command = %geodineum_comms::inbound::log_safe(&command), "Handling local command");
-                                        let response_text = if admin_bot { admin_bot_reply(&command) } else { handle_local_command(&command, &params) };
-                                        // Reply directly via Telegram (skip outbound pipeline)
                                         if let Some(ref token) = inbound_bot_token {
-                                            let _ = send_telegram_reply(token, &chat_id, &response_text).await;
+                                            let _ = send_telegram_reply(token, &chat_id, &bot_reply(&command)).await;
                                         }
                                     }
-                                    CommandAction::Inference { prompt, pipeline, session_id } => {
-                                        info!(
-                                            pipeline = %pipeline,
-                                            chat_id = %chat_id,
-                                            "Routing to inference service"
-                                        );
-
-                                        let unified_stream = format!(
-                                            "{{{}}}:gnode:unified:{}",
-                                            inbound_site_id, cli.environment
-                                        );
-
-                                        // Send processing indicator + spawn response poller
-                                        // (only if we have a bot token for Telegram replies)
-                                        let processing_msg_id = if let Some(ref token) = inbound_bot_token {
-                                            match send_processing_indicator(token, &chat_id, &pipeline).await {
-                                                Ok(id) => id,
-                                                Err(e) => {
-                                                    warn!(error = %e, "Failed to send processing indicator");
-                                                    0
-                                                }
-                                            }
-                                        } else {
-                                            0
-                                        };
-
-                                        // XADD to the inference unified stream
-                                        let request_id = format!("comms-{}-{}", chat_id, chrono::Utc::now().timestamp_millis());
-                                        let params_json = serde_json::json!({
-                                            "prompt": prompt,
-                                            "pipeline": pipeline,
-                                            "consumer": format!("comms:{}", operator_id),
-                                            "session_id": session_id,
-                                        });
-
-                                        let _: redis::RedisResult<String> = redis::cmd("XADD")
-                                            .arg(&unified_stream)
-                                            .arg("*")
-                                            .arg(&[
-                                                ("id", request_id.as_str()),
-                                                ("cmd", "direct"),
-                                                ("params", &params_json.to_string()),
-                                                ("_gh", "inference"),
-                                            ])
-                                            .query_async(&mut inbound_conn)
-                                            .await;
-
-                                        // Spawn async response poller (non-blocking)
+                                    CommandAction::Start => {
                                         if let Some(ref token) = inbound_bot_token {
-                                            if processing_msg_id > 0 {
-                                                spawn_response_poller(
-                                                    conn.clone(),
-                                                    PollRequest {
-                                                        bot_token: token.clone(),
-                                                        chat_id: chat_id.clone(),
-                                                        processing_msg_id,
-                                                        unified_stream: unified_stream.clone(),
-                                                        request_id: request_id.clone(),
-                                                        pipeline: pipeline.clone(),
-                                                        timeout_secs: inference_timeout,
-                                                        from_entry: None,
-                                                    },
-                                                );
-                                            }
+                                            let _ = send_telegram_reply(token, &chat_id, &bot_reply("help")).await;
                                         }
-
-                                        // Record message in conversation state
-                                        conv_state
-                                            .record_message(&chat_id, &inbound_site_id, &text)
-                                            .await
-                                            .ok();
                                     }
                                     CommandAction::ComponentReply { resolution } => {
                                         info!(
@@ -1320,17 +1156,6 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
                                             command = %resolution.command,
                                             "Routing reply to component"
                                         );
-                                        // XADD reply to the component's callback stream
-                                        let _reply_json = serde_json::json!({
-                                            "command": resolution.command,
-                                            "context_id": resolution.context_id,
-                                            "component": resolution.component,
-                                            "operator_id": operator_id,
-                                            "operator_name": operator_name,
-                                            "channel_source": "telegram",
-                                            "ts": chrono::Utc::now().to_rfc3339(),
-                                        });
-
                                         let _: redis::RedisResult<String> = redis::cmd("XADD")
                                             .arg(&resolution.callback_stream)
                                             .arg("*")
@@ -1346,68 +1171,9 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
                                             .query_async(&mut inbound_conn)
                                             .await;
                                     }
-                                    CommandAction::SetPipeline { pipeline } => {
-                                        conv_state
-                                            .set_pipeline(&chat_id, &inbound_site_id, &pipeline)
-                                            .await
-                                            .ok();
-                                        if let Some(ref token) = inbound_bot_token {
-                                            let _ = send_telegram_reply(
-                                                token,
-                                                &chat_id,
-                                                &format!("Pipeline switched to <code>{}</code>", pipeline),
-                                            ).await;
-                                        }
-                                    }
-                                    CommandAction::Reset => {
-                                        conv_state
-                                            .reset(&chat_id, &inbound_site_id)
-                                            .await
-                                            .ok();
-                                        if let Some(ref token) = inbound_bot_token {
-                                            let _ = send_telegram_reply(
-                                                token,
-                                                &chat_id,
-                                                "Conversation reset. Next message starts a fresh session.",
-                                            ).await;
-                                        }
-                                    }
-                                    CommandAction::Start if admin_bot => {
-                                        if let Some(ref token) = inbound_bot_token {
-                                            let _ = send_telegram_reply(token, &chat_id, &admin_bot_reply("help")).await;
-                                        }
-                                    }
-                                    CommandAction::Start => {
-                                        if let Some(ref token) = inbound_bot_token {
-                                            let keyboard = geodineum_comms::inbound::build_inline_keyboard(vec![
-                                                vec![
-                                                    geodineum_comms::inbound::InlineButton {
-                                                        text: "About".into(),
-                                                        callback_data: "about".into(),
-                                                    },
-                                                    geodineum_comms::inbound::InlineButton {
-                                                        text: "Settings".into(),
-                                                        callback_data: "settings".into(),
-                                                    },
-                                                ],
-                                            ]);
-                                            let welcome = format!(
-                                                "Welcome, <b>{}</b>!\n\n\
-                                                 Connected to the Geodineum constellation via the \
-                                                 <code>{}</code> pipeline.\n\n\
-                                                 Send a message to start a conversation.",
-                                                operator_name, pipeline
-                                            );
-                                            let _ = send_telegram_message_with_keyboard(
-                                                token, &chat_id, &welcome, &keyboard,
-                                            ).await;
-                                        }
-                                    }
                                     CommandAction::Callback { data, query_id, message_id } => {
-                                        // Poll votes are handled BEFORE the generic ack:
-                                        // their answer_callback carries the recorded choice
-                                        // (the toast is the confirmation), and the keyboard
-                                        // is cleared so a second vote has nothing to press.
+                                        // Poll votes are answered here, with the recorded choice; a grant press was
+                                        // answered by the receiver and is read from the stream by `geodineum grants watch`.
                                         if data.starts_with("poll:") {
                                             if let Some(ref token) = inbound_bot_token {
                                                 handle_poll_callback(
@@ -1422,213 +1188,25 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
                                                 )
                                                 .await;
                                             }
-                                        } else if admin_bot {
-                                            // A grant press: the receiver answered it and `geodineum grants watch` reads it from the stream.
-                                            debug!(callback_data = %data, "Admin bot: button press left to its own reader");
-                                        } else if let Some(ref token) = inbound_bot_token {
-                                            // Answer the callback (removes loading spinner)
-                                            answer_callback(token, &query_id, None).await;
-
-                                            match data.as_str() {
-                                                "about" => {
-                                                    let text = format!(
-                                                        "<b>Geodineum-COMMS Advisor</b>\n\
-                                                         Active pipeline: <code>{}</code>\n\n\
-                                                         Connected to the Geodineum constellation via ValKey streams.\n\
-                                                         Inference backed by the configured inference service.",
-                                                        pipeline
-                                                    );
-                                                    let _ = send_telegram_reply(token, &chat_id, &text).await;
-                                                }
-                                                "settings" => {
-                                                    let kb = geodineum_comms::inbound::build_inline_keyboard(vec![
-                                                        vec![
-                                                            geodineum_comms::inbound::InlineButton {
-                                                                text: "Switch Pipeline".into(),
-                                                                callback_data: "switch_pipeline".into(),
-                                                            },
-                                                            geodineum_comms::inbound::InlineButton {
-                                                                text: "System Status".into(),
-                                                                callback_data: "system_status".into(),
-                                                            },
-                                                        ],
-                                                    ]);
-                                                    let _ = send_telegram_message_with_keyboard(
-                                                        token, &chat_id, "Settings", &kb,
-                                                    ).await;
-                                                }
-                                                "switch_pipeline" => {
-                                                    // Live pipeline list from Geodine's published registry
-                                                    // ({site}:gnode:pipeline:_index, a JSON array the pipeline
-                                                    // runner refreshes at startup). The static list is only a
-                                                    // fallback for when the registry is absent — hardcoding it
-                                                    // hid every pipeline added after the list was written
-                                                    // (aurelius, scn_transcoder, ...).
-                                                    let index_key = format!("{{{}}}:gnode:pipeline:_index", inbound_site_id);
-                                                    let registry: Vec<String> = redis::cmd("GET")
-                                                        .arg(&index_key)
-                                                        .query_async::<Option<String>>(&mut inbound_conn)
-                                                        .await
-                                                        .ok()
-                                                        .flatten()
-                                                        .and_then(|s| serde_json::from_str(&s).ok())
-                                                        .unwrap_or_default();
-                                                    let pipelines: Vec<String> = if registry.is_empty() {
-                                                        ["sysadmin", "sales_chat", "code_security", "log_monitor"]
-                                                            .iter().map(|s| s.to_string()).collect()
-                                                    } else {
-                                                        registry
-                                                    };
-                                                    let buttons: Vec<Vec<geodineum_comms::inbound::InlineButton>> = pipelines
-                                                        .iter()
-                                                        .map(|p| {
-                                                            let label = if *p == pipeline {
-                                                                format!("{} (active)", p)
-                                                            } else {
-                                                                p.to_string()
-                                                            };
-                                                            vec![geodineum_comms::inbound::InlineButton {
-                                                                text: label,
-                                                                callback_data: format!("pipeline_{}", p),
-                                                            }]
-                                                        })
-                                                        .collect();
-                                                    let kb = geodineum_comms::inbound::build_inline_keyboard(buttons);
-                                                    let _ = send_telegram_message_with_keyboard(
-                                                        token, &chat_id,
-                                                        &format!("{} pipelines available.", pipelines.len()),
-                                                        &kb,
-                                                    ).await;
-                                                }
-                                                "system_status" => {
-                                                    // Read pipeline metrics from ValKey
-                                                    let status_text = get_pipeline_status(&mut inbound_conn, &inbound_site_id).await;
-                                                    let _ = send_telegram_reply(token, &chat_id, &status_text).await;
-                                                }
-                                                d if d.starts_with("pipeline_") => {
-                                                    let name = &d["pipeline_".len()..];
-                                                    conv_state
-                                                        .set_pipeline(&chat_id, &inbound_site_id, name)
-                                                        .await
-                                                        .ok();
-                                                    answer_callback(token, &query_id, Some(&format!("Switched to {}", name))).await;
-                                                }
-                                                _ => {
-                                                    debug!(callback_data = %data, "Unknown callback");
-                                                }
-                                            }
-                                        }
-                                    }
-                                    CommandAction::History => {
-                                        if let Some(ref token) = inbound_bot_token {
-                                            // Read last messages from the inference service conversation history
-                                            let history = get_conversation_history(
-                                                &mut inbound_conn, &inbound_site_id, &session_id,
-                                            ).await;
-                                            let _ = send_telegram_reply(token, &chat_id, &history).await;
-                                        }
-                                    }
-                                    CommandAction::ChainInference { prompt, session_id } => {
-                                        info!(chat_id = %chat_id, "Routing to staged inference chain");
-
-                                        let unified_stream = format!(
-                                            "{{{}}}:gnode:unified:{}",
-                                            inbound_site_id, cli.environment
-                                        );
-
-                                        // Send processing indicator
-                                        let processing_msg_id = if let Some(ref token) = inbound_bot_token {
-                                            match send_processing_indicator(token, &chat_id, "staged inference (draft→review→guard)").await {
-                                                Ok(id) => id,
-                                                Err(_) => 0,
-                                            }
                                         } else {
-                                            0
-                                        };
-
-                                        // Run the chain (blocking — sequential 3-stage pipeline)
-                                        let chain_result = geodineum_comms::inbound::run_inference_chain(
-                                            &mut inbound_conn,
-                                            &unified_stream,
-                                            &prompt,
-                                            &operator_id,
-                                            &session_id,
-                                            &chain_config,
-                                        )
-                                        .await;
-
-                                        // Deliver result
-                                        if let Some(ref token) = inbound_bot_token {
-                                            // an earlier hardening pass: AI-generated text must be HTML-escaped
-                                            // before embedding into the parse_mode=HTML payload.
-                                            let response_text = match chain_result {
-                                                Ok(result) => {
-                                                    let safe = geodineum_comms::inbound::html_escape_telegram(&result.text);
-                                                    if result.filtered {
-                                                        safe
-                                                    } else {
-                                                        format!("{}\n\n<i>staged inference | 3-stage chain</i>", safe)
-                                                    }
-                                                }
-                                                Err(e) => format!(
-                                                    "Inference chain error: {}",
-                                                    geodineum_comms::inbound::html_escape_telegram(&e.to_string())
-                                                ),
-                                            };
-
-                                            if processing_msg_id > 0 {
-                                                let client = reqwest::Client::new();
-                                                let url = format!("{}/bot{}/editMessageText", geodineum_comms::telegram_api(), token);
-                                                let payload = serde_json::json!({
-                                                    "chat_id": chat_id,
-                                                    "message_id": processing_msg_id,
-                                                    "text": response_text,
-                                                    "parse_mode": "HTML",
-                                                });
-                                                let _ = client.post(&url).json(&payload).send().await;
-                                            } else {
-                                                let _ = send_telegram_reply(token, &chat_id, &response_text).await;
-                                            }
+                                            debug!(callback_data = %data, "Button press left to its own reader");
                                         }
-
-                                        conv_state
-                                            .record_message(&chat_id, &inbound_site_id, &text)
-                                            .await
-                                            .ok();
                                     }
                                     CommandAction::WorkflowDispatch { intent } => {
                                         info!(
                                             workflow = %intent.workflow_id,
                                             "Dispatching workflow to the workflow-engine stream"
                                         );
-
-                                        let wf_dispatcher = WorkflowDispatcher::new(
-                                            &inbound_site_id,
-                                            &cli.environment,
-                                        );
-
-                                        match wf_dispatcher.dispatch(
-                                            &mut inbound_conn,
-                                            &intent,
-                                            &operator_id,
-                                            &operator_name,
-                                        ).await {
-                                            Ok(execution_id) => {
-                                                let confirmation = WorkflowDispatcher::format_dispatch_confirmation(
-                                                    &intent, &execution_id,
-                                                );
-                                                if let Some(ref token) = inbound_bot_token {
-                                                    let _ = send_telegram_reply(token, &chat_id, &confirmation).await;
-                                                }
-                                            }
-                                            Err(e) => {
-                                                if let Some(ref token) = inbound_bot_token {
-                                                    let _ = send_telegram_reply(
-                                                        token, &chat_id,
-                                                        &format!("Workflow dispatch failed: {}", e),
-                                                    ).await;
-                                                }
-                                            }
+                                        let wf_dispatcher = WorkflowDispatcher::new(&inbound_site_id, &cli.environment);
+                                        let reply = match wf_dispatcher
+                                            .dispatch(&mut inbound_conn, &intent, &operator_id, &operator_name)
+                                            .await
+                                        {
+                                            Ok(execution_id) => WorkflowDispatcher::format_dispatch_confirmation(&intent, &execution_id),
+                                            Err(e) => format!("Workflow dispatch failed: {}", e),
+                                        };
+                                        if let Some(ref token) = inbound_bot_token {
+                                            let _ = send_telegram_reply(token, &chat_id, &reply).await;
                                         }
                                     }
                                     CommandAction::NoOp { reason } => {
@@ -1906,106 +1484,6 @@ fn parse_xreadgroup_response(
 }
 
 /// Send a text reply directly to a Telegram chat (bypasses outbound pipeline)
-struct WebCtx<'a> {
-    link_site: &'a str,
-    environment: &'a str,
-    node_id: &'a str,
-    bot_token: Option<&'a str>,
-    admin_ids: Option<&'a Vec<i64>>,
-    timeout_secs: u64,
-}
-
-/// A private message from a web subscriber's Telegram, handled here and true; false leaves it to the
-/// operator's router (an admin's own commands, an admin who never linked). A non-admin never reaches
-/// the router: the receiver let them through only for /link, /unlink or a link it already holds.
-async fn web_subscriber(
-    conn: &mut redis::aio::MultiplexedConnection,
-    ctx: &WebCtx<'_>,
-    text: &str,
-    chat_id: &str,
-    operator_id: &str,
-    operator_name: &str,
-    poller_conn: redis::aio::MultiplexedConnection,
-) -> bool {
-    use geodineum_comms::inbound::web_link::{self, LinkOutcome};
-    let say = |t: String| async move {
-        if let Some(token) = ctx.bot_token {
-            let _ = send_telegram_reply(token, chat_id, &t).await;
-        }
-    };
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    if let Some((site, code)) = web_link::parse_link(text) {
-        match web_link::link(conn, ctx.link_site, &site, &code, operator_id, chat_id, operator_name, now_ms).await {
-            LinkOutcome::Linked { lane, .. } => {
-                info!(site = %site, "Telegram linked to a web subscriber");
-                say(format!("Linked to your Geodine window. Messages here continue the <code>{}</code> conversation; /unlink ends it.",
-                    geodineum_comms::inbound::html_escape_telegram(&lane))).await;
-            }
-            LinkOutcome::Expired => say("That code has expired or was already used. Make a new one in the window.".into()).await,
-        }
-        return true;
-    }
-    if web_link::is_unlink(text) {
-        let was = web_link::unlink(conn, ctx.link_site, operator_id).await;
-        say(if was { "Unlinked. This chat no longer continues your Geodine window." } else { "This chat is not linked to a Geodine window." }.into()).await;
-        return true;
-    }
-    let is_admin = match ctx.admin_ids {
-        None => true,
-        Some(ids) => ids.contains(&operator_id.parse::<i64>().unwrap_or(0)),
-    };
-    let command = text.starts_with('/');
-    if command && is_admin {
-        return false;
-    }
-    match web_link::resolve(conn, ctx.link_site, operator_id).await {
-        Some(Ok((web, route))) if !command => {
-            if !web_link::within_rate(conn, ctx.link_site, operator_id, now_ms).await {
-                say("That is a lot of messages this hour; this one was not sent. Try again later.".into()).await;
-                return true;
-            }
-            let request_id = format!("tg-{}-{}", operator_id, now_ms);
-            let stream = web_link::site_stream(&web.site, ctx.environment);
-            let fields = web_link::command_fields(&web.site, ctx.node_id, &route, text, &request_id, now_ms);
-            let entry: redis::RedisResult<String> = redis::cmd("XADD").arg(&stream).arg("*").arg(&fields).query_async(conn).await;
-            let entry = match entry {
-                Ok(e) => e,
-                Err(e) => {
-                    warn!(error = %e, site = %web.site, "Could not put a linked message on the site's stream");
-                    say("Your window's site could not take the message just now; try again in a moment.".into()).await;
-                    return true;
-                }
-            };
-            if let Some(token) = ctx.bot_token {
-                if let Ok(processing_msg_id) = send_processing_indicator(token, chat_id, &route.pipeline).await {
-                    if processing_msg_id > 0 {
-                        spawn_response_poller(poller_conn, PollRequest {
-                            bot_token: token.to_string(),
-                            chat_id: chat_id.to_string(),
-                            processing_msg_id,
-                            unified_stream: stream,
-                            request_id,
-                            pipeline: route.pipeline.clone(),
-                            timeout_secs: ctx.timeout_secs,
-                            from_entry: Some(entry),
-                        });
-                    }
-                }
-            }
-            true
-        }
-        Some(Ok(_)) => {
-            say("Commands are for the operator. Send a question and it continues your window's conversation.".into()).await;
-            true
-        }
-        Some(Err(_)) => {
-            say("This chat is no longer linked to a Geodine window. Make a new code there to link it again.".into()).await;
-            true
-        }
-        None => !is_admin,
-    }
-}
-
 async fn send_telegram_reply(bot_token: &str, chat_id: &str, text: &str) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
     let url = format!("{}/bot{}/sendMessage", geodineum_comms::telegram_api(), bot_token);
@@ -2019,25 +1497,6 @@ async fn send_telegram_reply(bot_token: &str, chat_id: &str, text: &str) -> anyh
 }
 
 /// Send a Telegram message with inline keyboard
-async fn send_telegram_message_with_keyboard(
-    bot_token: &str,
-    chat_id: &str,
-    text: &str,
-    reply_markup: &serde_json::Value,
-) -> anyhow::Result<()> {
-    let client = reqwest::Client::new();
-    let url = format!("{}/bot{}/sendMessage", geodineum_comms::telegram_api(), bot_token);
-    let payload = serde_json::json!({
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML",
-        "reply_markup": reply_markup,
-    });
-    client.post(&url).json(&payload).send().await?;
-    Ok(())
-}
-
-/// Answer a Telegram callback query (removes loading spinner from button)
 async fn answer_callback(bot_token: &str, query_id: &str, text: Option<&str>) {
     let client = reqwest::Client::new();
     let url = format!("{}/bot{}/answerCallbackQuery", geodineum_comms::telegram_api(), bot_token
@@ -2189,96 +1648,8 @@ async fn handle_poll_callback(
     }
 }
 
-/// Read pipeline status from ValKey metrics
-async fn get_pipeline_status(
-    conn: &mut redis::aio::MultiplexedConnection,
-    site_id: &str,
-) -> String {
-    let pattern = format!("{{{}}}:inference:metrics:*", site_id);
-    // an earlier hardening pass: SCAN cursor instead of blocking KEYS.
-    let keys: Vec<String> = geodineum_comms::valkey_scan::scan_keys(conn, &pattern)
-        .await
-        .unwrap_or_default();
-
-    if keys.is_empty() {
-        return "Could not reach the inference service or no pipelines are running.".to_string();
-    }
-
-    let mut lines = vec!["<b>Inference Pipeline Status</b>\n".to_string()];
-    for key in &keys {
-        if key.ends_with(":_aggregate") {
-            continue;
-        }
-        let name = key.rsplit(':').next().unwrap_or("?");
-        let data: std::collections::HashMap<String, String> = redis::cmd("HGETALL")
-            .arg(key)
-            .query_async(conn)
-            .await
-            .unwrap_or_default();
-        let model = data.get("model").cloned().unwrap_or_else(|| "?".into());
-        let running = data.get("running").map(|s| s == "1").unwrap_or(false);
-        if running {
-            lines.push(format!("  <code>{}</code> — {}", name, model));
-        }
-    }
-
-    if lines.len() == 1 {
-        return "No running pipelines detected.".to_string();
-    }
-
-    lines.join("\n")
-}
-
-/// Read conversation history from the inference service ConversationStore in ValKey
-async fn get_conversation_history(
-    conn: &mut redis::aio::MultiplexedConnection,
-    site_id: &str,
-    session_id: &str,
-) -> String {
-    if session_id.is_empty() {
-        return "No active session. Send a message to start a conversation.".to_string();
-    }
-
-    // The inference service stores history at {site_id}:inference:history:{session_id}
-    // (brace-literal hash-tag form for cluster-mode co-location).
-    let key = format!("{{{}}}:inference:history:{}", site_id, session_id);
-    let entries: Vec<String> = redis::cmd("LRANGE")
-        .arg(&key)
-        .arg(0)
-        .arg(19) // Last 20 entries
-        .query_async(conn)
-        .await
-        .unwrap_or_default();
-
-    if entries.is_empty() {
-        return "No conversation history found for this session.".to_string();
-    }
-
-    let mut lines = vec!["<b>Conversation History</b>\n".to_string()];
-    for entry in &entries {
-        // Each entry is JSON: {"role": "user"|"assistant", "content": "..."}
-        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(entry) {
-            let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("?");
-            let content = msg
-                .get("content")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let prefix = if role == "user" { "You" } else { "Assistant" };
-            // Truncate long messages
-            let short = if content.len() > 200 {
-                format!("{}...", &content[..200])
-            } else {
-                content.to_string()
-            };
-            lines.push(format!("<b>{}</b>: {}", prefix, short));
-        }
-    }
-
-    lines.join("\n\n")
-}
-
-/// What the admin bot says. It answers only its operators; conversations are GeodineBot's.
-fn admin_bot_reply(command: &str) -> String {
+/// What the bot says. It answers only its operators; conversations are GeodineBot's.
+fn bot_reply(command: &str) -> String {
     match command {
         "status" | "health" => "Geodineum-COMMS is running.".to_string(),
         "help" => "This bot carries the constellation's alerts, grant requests and polls.\n\n\
@@ -2287,28 +1658,6 @@ fn admin_bot_reply(command: &str) -> String {
                    Reply to an alert with QUARANTINE, DISMISS, RETRY or UPDATE."
             .to_string(),
         _ => "This bot has no conversations. Talk to GeodineBot; here, /help.".to_string(),
-    }
-}
-
-/// Handle a local command (executed within COMMS, not routed to components)
-fn handle_local_command(command: &str, params: &[String]) -> String {
-    match command {
-        "status" | "health" => "Geodineum-COMMS is running. Use /pipeline to see active pipeline.".to_string(),
-        "help" => {
-            "/status — System health\n\
-             /pipeline [name] — View or switch pipeline\n\
-             /reset — Reset conversation\n\
-             /help — This message\n\n\
-             Reply to alerts with QUARANTINE, DISMISS, RETRY, or UPDATE."
-                .to_string()
-        }
-        "pipeline_info" => {
-            let current = params.first().map(|s| s.as_str()).unwrap_or("unknown");
-            format!("Current pipeline: {}", current)
-        }
-        "stats" => "Detailed statistics: wp-admin \u{2192} Geodineum \u{2192} Comms on any constellation site.".to_string(),
-        "sites" => "Site listing: `geodineum status` on the node, or wp-admin \u{2192} Geodineum \u{2192} Comms.".to_string(),
-        _ => format!("Unknown command: {}", command),
     }
 }
 

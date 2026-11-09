@@ -1,12 +1,11 @@
-//! Command router — parses operator text into structured commands and routes them
+//! Command router for the Geodineum bot: what an operator's message or button press does.
 //!
-//! Supports three input modes:
-//!   1. Slash commands (/status, /pipeline, /reset, /health)
-//!   2. Reply commands (QUARANTINE, RETRY, DISMISS — resolved via ConversationState)
-//!   3. Conversational text (free text routed to the inference service)
+//!   1. Button presses → Callback (polls here; grant presses are read by `geodineum grants watch`)
+//!   2. Slash commands → /start, /status, /help; anything else is answered with where conversations live
+//!   3. Reply commands (QUARANTINE, RETRY, DISMISS, …) → the component whose alert asked, or a workflow intent
+//!   4. Anything else → told where conversations live (GeodineBot, in Geodine)
 
 use serde::{Deserialize, Serialize};
-use tracing::debug;
 
 use crate::error::Result;
 use crate::inbound::conversation_state::{ContextResolution, ConversationState};
@@ -16,9 +15,9 @@ use crate::inbound::workflow_dispatch::{WorkflowDispatcher, WorkflowIntent};
 /// Parsed command from operator text
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedCommand {
-    /// Raw command verb (e.g., "status", "quarantine", "pipeline")
+    /// Raw command verb (e.g., "status", "quarantine")
     pub command: String,
-    /// Parameters (e.g., pipeline name, site ID)
+    /// Parameters
     pub params: Vec<String>,
     /// Whether this was a slash command
     pub is_slash: bool,
@@ -29,83 +28,41 @@ pub struct ParsedCommand {
 /// Action to take after routing a command
 #[derive(Debug)]
 pub enum CommandAction {
-    /// Execute locally within COMMS (e.g., /status, /health)
-    Local {
-        command: String,
-        params: Vec<String>,
-    },
-    /// Route to the inference service (conversational text)
-    Inference {
-        prompt: String,
-        pipeline: String,
-        session_id: String,
-    },
+    /// Answered by COMMS itself: `status`, `help`, or `not_here` (no conversations on this bot)
+    Local { command: String },
     /// Route reply to a component via callback stream
-    ComponentReply {
-        resolution: ContextResolution,
-    },
-    /// Pipeline switch command
-    SetPipeline {
-        pipeline: String,
-    },
-    /// Reset conversation state
-    Reset,
-    /// /start command — show welcome message with inline keyboard
+    ComponentReply { resolution: ContextResolution },
+    /// /start
     Start,
     /// Callback query from inline keyboard button press
     Callback {
-        /// callback_data string (e.g., "pipeline_sysadmin", "settings", "about")
+        /// callback_data string (e.g., "poll:<site>:<ctx>:<i>", "grant:approve:<id>")
         data: String,
         /// Callback query ID (for answering)
         query_id: String,
         /// Message ID that had the keyboard (for editing)
         message_id: Option<i64>,
     },
-    /// Show conversation history
-    History,
-    /// Staged inference chain (draft → review → guard)
-    ChainInference {
-        prompt: String,
-        session_id: String,
-    },
     /// Dispatch a workflow to the workflow engine
-    WorkflowDispatch {
-        intent: WorkflowIntent,
-    },
+    WorkflowDispatch { intent: WorkflowIntent },
     /// Unknown or empty — no action
-    NoOp {
-        reason: String,
-    },
+    NoOp { reason: String },
 }
 
 /// Routes inbound operator messages to appropriate handlers
 pub struct CommandRouter {
-    /// Known slash commands handled locally
-    local_commands: Vec<&'static str>,
-    /// Workflow dispatcher for recognizing workflow intents
     workflow_dispatcher: Option<WorkflowDispatcher>,
-    /// Whether the staged inference chain is enabled
-    pub chain_enabled: bool,
-    /// The admin bot: nothing here ever becomes a conversation
-    pub admin_bot: bool,
+}
+
+impl Default for CommandRouter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CommandRouter {
     pub fn new() -> Self {
-        Self {
-            local_commands: vec![
-                "status", "health", "help", "stats", "sites", "visitors",
-            ],
-            workflow_dispatcher: None,
-            chain_enabled: false,
-            admin_bot: false,
-        }
-    }
-
-    /// The admin bot: /status, /help, alert replies, workflow intents; everything else is answered with where to go
-    pub fn with_admin_bot(mut self, admin_bot: bool) -> Self {
-        self.admin_bot = admin_bot;
-        self
+        Self { workflow_dispatcher: None }
     }
 
     /// Enable workflow dispatch with the given dispatcher
@@ -114,28 +71,13 @@ impl CommandRouter {
         self
     }
 
-    /// Enable the staged inference chain
-    pub fn with_inference_chain(mut self, enabled: bool) -> Self {
-        self.chain_enabled = enabled;
-        self
-    }
-
     /// Route an inbound message to the appropriate action.
-    ///
-    /// Routing priority:
-    ///   0. Callback queries → Callback action (button presses)
-    ///   1. Slash commands → Local or SetPipeline or Reset or Start
-    ///   2. Reply commands (uppercase) → resolve against active context
-    ///   3. Free text → inference service
     pub async fn route_command(
         &self,
         msg: &InboundMessage,
         conv_state: &mut ConversationState,
         site_id: &str,
-        pipeline: &str,
-        session_id: &str,
     ) -> Result<CommandAction> {
-        // 0. Callback queries (inline keyboard button presses)
         if msg.is_callback {
             return Ok(CommandAction::Callback {
                 data: msg.text.clone(), // callback_data is stored in text field
@@ -145,176 +87,60 @@ impl CommandRouter {
         }
 
         let parsed = self.parse_text(&msg.text);
-
-        // 1. Slash commands
         if parsed.is_slash {
-            if self.admin_bot {
-                return Ok(Self::admin_slash(&parsed));
-            }
-            return Ok(self.handle_slash(&parsed, pipeline));
+            return Ok(match parsed.command.as_str() {
+                "start" => CommandAction::Start,
+                "status" | "health" | "help" => CommandAction::Local { command: parsed.command.clone() },
+                _ => CommandAction::Local { command: "not_here".to_string() },
+            });
         }
 
-        // 2. Reply commands — check if text matches an active context
         if parsed.is_reply_command {
-            if let Some(resolution) = conv_state
-                .resolve_reply(&msg.chat_id, site_id, &msg.text)
-                .await?
-            {
+            if let Some(resolution) = conv_state.resolve_reply(&msg.chat_id, site_id, &msg.text).await? {
                 return Ok(CommandAction::ComponentReply { resolution });
             }
-
-            // 2b. Check if it's a workflow intent (UPDATE, BACKUP, LOCKDOWN, etc.)
             if let Some(ref dispatcher) = self.workflow_dispatcher {
                 if let Some(intent) = dispatcher.recognize_intent(&msg.text) {
                     return Ok(CommandAction::WorkflowDispatch { intent });
                 }
             }
-
-            // Not a valid reply or workflow — fall through to inference
         }
 
-        if self.admin_bot {
-            return Ok(CommandAction::Local { command: "not_here".to_string(), params: vec![] });
-        }
-
-        // 3. Conversational text → inference service
-        // Use the staged chain if enabled, otherwise direct single-pipeline
-        if self.chain_enabled {
-            Ok(CommandAction::ChainInference {
-                prompt: msg.text.clone(),
-                session_id: session_id.to_string(),
-            })
-        } else {
-            Ok(CommandAction::Inference {
-                prompt: msg.text.clone(),
-                pipeline: pipeline.to_string(),
-                session_id: session_id.to_string(),
-            })
-        }
+        Ok(CommandAction::Local { command: "not_here".to_string() })
     }
 
     /// Parse operator text into a structured command
     pub fn parse_text(&self, text: &str) -> ParsedCommand {
         let trimmed = text.trim();
 
-        // Slash command: /status, /pipeline sysadmin, /reset
-        if trimmed.starts_with('/') {
-            let without_slash = &trimmed[1..];
+        if let Some(without_slash) = trimmed.strip_prefix('/') {
             let mut parts = without_slash.splitn(2, char::is_whitespace);
             let command = parts.next().unwrap_or("").to_lowercase();
             let params: Vec<String> = parts
                 .next()
-                .map(|rest| {
-                    rest.split_whitespace()
-                        .map(|s| s.to_string())
-                        .collect()
-                })
+                .map(|rest| rest.split_whitespace().map(|s| s.to_string()).collect())
                 .unwrap_or_default();
-
-            return ParsedCommand {
-                command,
-                params,
-                is_slash: true,
-                is_reply_command: false,
-            };
+            return ParsedCommand { command, params, is_slash: true, is_reply_command: false };
         }
 
-        // Reply command: single uppercase word or short uppercase phrase
-        // e.g., "QUARANTINE", "RETRY", "DISMISS", "UPDATE your_site"
-        let is_reply = Self::looks_like_reply_command(trimmed);
-
-        if is_reply {
+        if Self::looks_like_reply_command(trimmed) {
             let mut parts = trimmed.splitn(2, char::is_whitespace);
             let command = parts.next().unwrap_or("").to_uppercase();
             let params: Vec<String> = parts
                 .next()
-                .map(|rest| {
-                    rest.split_whitespace()
-                        .map(|s| s.to_string())
-                        .collect()
-                })
+                .map(|rest| rest.split_whitespace().map(|s| s.to_string()).collect())
                 .unwrap_or_default();
-
-            return ParsedCommand {
-                command,
-                params,
-                is_slash: false,
-                is_reply_command: true,
-            };
+            return ParsedCommand { command, params, is_slash: false, is_reply_command: true };
         }
 
-        // Free text / conversational
-        ParsedCommand {
-            command: String::new(),
-            params: vec![],
-            is_slash: false,
-            is_reply_command: false,
-        }
+        ParsedCommand { command: String::new(), params: vec![], is_slash: false, is_reply_command: false }
     }
 
     /// Check if text looks like a reply command (uppercase action word)
     fn looks_like_reply_command(text: &str) -> bool {
         let first_word = text.split_whitespace().next().unwrap_or("");
-
-        // Must be at least 3 chars and all uppercase letters
         first_word.len() >= 3
             && first_word.chars().all(|c| c.is_ascii_uppercase() || c == '_')
-            && text.split_whitespace().count() <= 4 // reply commands are short
-    }
-
-    fn admin_slash(parsed: &ParsedCommand) -> CommandAction {
-        match parsed.command.as_str() {
-            "start" => CommandAction::Start,
-            "status" | "health" | "help" => CommandAction::Local { command: parsed.command.clone(), params: vec![] },
-            _ => CommandAction::Local { command: "not_here".to_string(), params: vec![] },
-        }
-    }
-
-    /// Handle a slash command
-    fn handle_slash(&self, parsed: &ParsedCommand, current_pipeline: &str) -> CommandAction {
-        match parsed.command.as_str() {
-            // Start — welcome message with inline keyboard
-            "start" => CommandAction::Start,
-
-            // History — show recent conversation turns
-            "history" => CommandAction::History,
-
-            // Pipeline management
-            "pipeline" | "p" => {
-                if let Some(name) = parsed.params.first() {
-                    CommandAction::SetPipeline {
-                        pipeline: name.clone(),
-                    }
-                } else {
-                    // No arg — show current pipeline (handled as local info)
-                    CommandAction::Local {
-                        command: "pipeline_info".to_string(),
-                        params: vec![current_pipeline.to_string()],
-                    }
-                }
-            }
-
-            // Reset conversation
-            "reset" | "clear" | "new" => CommandAction::Reset,
-
-            // Local commands (COMMS answers directly)
-            cmd if self.local_commands.contains(&cmd) => CommandAction::Local {
-                command: cmd.to_string(),
-                params: parsed.params.clone(),
-            },
-
-            // Unknown slash command — treat as inference with the slash stripped
-            _ => {
-                debug!(
-                    command = %parsed.command,
-                    "Unknown slash command, routing to inference"
-                );
-                CommandAction::Inference {
-                    prompt: format!("/{} {}", parsed.command, parsed.params.join(" ")),
-                    pipeline: current_pipeline.to_string(),
-                    session_id: String::new(),
-                }
-            }
-        }
+            && text.split_whitespace().count() <= 4
     }
 }

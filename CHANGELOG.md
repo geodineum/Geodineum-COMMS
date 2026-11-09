@@ -12,6 +12,11 @@ All notable changes to this project are documented here. The format follows Keep
   every failed, partly sent or skipped delivery of a production site, mails a daily summary through COMMS and reads it
   back from the mail log (signed, delivered); `ledger <site>` shows what a site's mail did. Fixed: the archive's channel
   results never read back (0/1 against a boolean), and were never written.
+- The Geodine paths left COMMS (after the cutover of 2026-11-08/09): the inference relay, the draft-review-guard chain,
+  the reply poller, the window link and `to: {telegram}` delivery (now refused, `person_not_here`), the per-chat
+  pipeline and session state, `COMMS_ADMIN_BOT`, `COMMS_INBOUND_PIPELINE`, `COMMS_INFERENCE_CHAIN` and the cutover
+  script; archived in `~/gh/ARCHIVE/Geodineum-COMMS-geodine-paths-2026-11-09`. The bot is the operators' only; the
+  default site is `geodineum`. COMMS's grant no longer reaches any site's command stream (installer).
 - Spam: a site's own filter settings now act (they were never read), with its action (`flag` marks the subject and
   delivers, `quarantine` holds, `reject`/gCore's `drop` drops); only what visitors send is checked; keywords match whole
   words; a scattered Gmail-style address counts but never makes spam alone; the daemon-wide filter is on and holds.
