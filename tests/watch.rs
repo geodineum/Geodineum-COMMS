@@ -48,7 +48,7 @@ async fn the_watcher_alerts_on_what_went_wrong_and_reads_its_daily_mail_back() {
     receipt(&mut c, "wt_a", "skipped").await;
     let a = run(&mut c, &o, t0 + H / 2).await.unwrap();
     assert_eq!(a.len(), 1, "{a:?}");
-    assert!(a[0].contains("wt_a: a message skipped"), "a new skipped delivery → alert; the old failure is not replayed");
+    assert!(a[0].starts_with("wt_a: ") && a[0].contains(" skipped: "), "a new skipped delivery → alert, in words; the old failure is not replayed: {a:?}");
 
     // the mail log shows the daily mail signed and delivered: nothing to say
     std::fs::write(&log, format!("Oct 26 06:00:01 h postfix/cleanup[1]: ABC123: message-id=<comms.{canary_id}@geodineum.com>\n\

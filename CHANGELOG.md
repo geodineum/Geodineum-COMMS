@@ -12,6 +12,8 @@ All notable changes to this project are documented here. The format follows Keep
   every failed, partly sent or skipped delivery of a production site, mails a daily summary through COMMS and reads it
   back from the mail log (signed, delivered); `ledger <site>` shows what a site's mail did. Fixed: the archive's channel
   results never read back (0/1 against a boolean), and were never written.
+- The watch speaks plainly: one line per message, however often it was retried, naming the message by its subject and
+  saying why it was not delivered and what fixes it; its daily counts count messages, not attempts.
 - The Geodine paths left COMMS (after the cutover of 2026-11-08/09): the inference relay, the draft-review-guard chain,
   the reply poller, the window link and `to: {telegram}` delivery (now refused, `person_not_here`), the per-chat
   pipeline and session state, `COMMS_ADMIN_BOT`, `COMMS_INBOUND_PIPELINE`, `COMMS_INFERENCE_CHAIN` and the cutover

@@ -86,8 +86,8 @@ pub fn canary_problem(trace: Option<&MailTrace>, comms_status: Option<&str>) -> 
     }
 }
 
-/// A delivery receipt worth an alert: failed, partly sent, or skipped, in production.
-pub fn receipt_alert(site: &str, fields: &HashMap<String, String>) -> Option<String> {
+/// A delivery receipt worth an alert (failed, partly sent, or skipped, in production): (message id, status, error).
+pub fn receipt_problem(fields: &HashMap<String, String>) -> Option<(String, String, String)> {
     if fields.get("cmd").map(String::as_str) != Some("comms.deliver") {
         return None;
     }
@@ -95,8 +95,48 @@ pub fn receipt_alert(site: &str, fields: &HashMap<String, String>) -> Option<Str
     if !matches!(st, "failed" | "partial_sent" | "skipped") {
         return None;
     }
-    let err = fields.get("e").map(|e| format!(": {}", e.chars().take(200).collect::<String>())).unwrap_or_default();
-    Some(format!("{site}: a message {} ({}){err}", st.replace('_', " "), fields.get("cid").map(String::as_str).unwrap_or("?")))
+    let cid = fields.get("cid").cloned().unwrap_or_else(|| "?".into());
+    let err = fields.get("e").map(|e| e.chars().take(200).collect::<String>()).unwrap_or_default();
+    Some((cid, st.replace('_', " "), err))
+}
+
+/// Why a message was not delivered, in words, with what fixes it. `bot_site` is the operators' own site.
+pub fn explain(site: &str, err: &str, bot_site: &str) -> String {
+    let channel = ["email", "telegram", "sms"].into_iter().find(|c| err.contains(&format!("[{c}]")));
+    let named = if channel == Some("email") { "email" } else if channel == Some("telegram") { "Telegram" } else { "SMS" };
+    if err.contains("not configured") {
+        return if site == bot_site {
+            format!("the operators' {named} is not set up (no {named} channel in {{{bot_site}}}:comms:config)")
+        } else if channel == Some("telegram") {
+            format!("{site} has no Telegram channel; a message meant for the operators must be addressed to them (to: operator)")
+        } else {
+            format!("{site} has no {named} channel set up")
+        };
+    }
+    if err.contains("no_recipients") {
+        return format!("{site}'s {named} channel has no recipient for this kind of message");
+    }
+    if err.contains("nonprod_dry_run") {
+        return format!("not sent on purpose: {site} is not in production");
+    }
+    if err.is_empty() { "no reason recorded".into() } else { err.to_string() }
+}
+
+/// One line per message (not per attempt): the problems of the receipts read, their attempts counted.
+pub fn problem_lines(problems: &[(String, String, String, String)], subjects: &HashMap<(String, String), String>, bot_site: &str) -> Vec<String> {
+    let mut order: Vec<(String, String)> = Vec::new();
+    let mut last: HashMap<(String, String), (String, String, usize)> = HashMap::new();
+    for (site, cid, st, err) in problems {
+        let k = (site.clone(), cid.clone());
+        let e = last.entry(k.clone()).or_insert_with(|| { order.push(k.clone()); (String::new(), String::new(), 0) });
+        *e = (st.clone(), err.clone(), e.2 + 1);
+    }
+    order.into_iter().map(|k| {
+        let (st, err, n) = &last[&k];
+        let what = subjects.get(&k).map(|s| format!("\"{s}\"")).unwrap_or_else(|| format!("message {}", k.1));
+        let tries = if *n > 1 { format!(" ({n} attempts)") } else { String::new() };
+        format!("{}: {what} {st}: {}{tries}", k.0, explain(&k.0, err, bot_site))
+    }).collect()
 }
 
 /// What a job's status file (`key=value` lines: `what`, `max_age_h`, `ok_ms`, `run_ms`, `error`) says.
@@ -167,17 +207,27 @@ pub struct Tally {
     pub skipped: u64,
 }
 
+/// Messages per site by how they ended: a message retried five times counts once, as its last receipt says.
 pub fn tally(receipts: &[(String, HashMap<String, String>)]) -> std::collections::BTreeMap<String, Tally> {
-    let mut out: std::collections::BTreeMap<String, Tally> = Default::default();
-    for (site, f) in receipts {
+    let mut last: std::collections::BTreeMap<(String, String), String> = Default::default();
+    for (n, (site, f)) in receipts.iter().enumerate() {
         if f.get("cmd").map(String::as_str) != Some("comms.deliver") {
             continue;
         }
-        let t = out.entry(site.clone()).or_default();
-        match f.get("st").map(String::as_str) {
-            Some("sent") => t.sent += 1,
-            Some("failed") | Some("partial_sent") => t.failed += 1,
-            Some("skipped") => t.skipped += 1,
+        let cid = f.get("cid").cloned().unwrap_or_else(|| format!("#{n}"));
+        let st = f.get("st").cloned().unwrap_or_default();
+        let e = last.entry((site.clone(), cid)).or_default();
+        if e.as_str() != "sent" {
+            *e = st;
+        }
+    }
+    let mut out: std::collections::BTreeMap<String, Tally> = Default::default();
+    for ((site, _), st) in last {
+        let t = out.entry(site).or_default();
+        match st.as_str() {
+            "sent" => t.sent += 1,
+            "failed" | "partial_sent" => t.failed += 1,
+            "skipped" => t.skipped += 1,
             _ => {}
         }
     }
@@ -190,7 +240,7 @@ pub fn summary_text(day: &str, tallies: &std::collections::BTreeMap<String, Tall
         lines.push("nothing was sent".into());
     }
     for (site, t) in tallies {
-        lines.push(format!("{site}: {} sent, {} failed, {} skipped", t.sent, t.failed, t.skipped));
+        lines.push(format!("{site}: {} delivered, {} not delivered, {} skipped", t.sent, t.failed, t.skipped));
     }
     lines.push(String::new());
     lines.push("This mail is also the canary: the watcher checks within the hour that it left this server signed and was delivered.".into());
@@ -240,21 +290,36 @@ Oct 26 10:40:05 aesir-solutions postfix/smtp[1490834]: 51AA0121AD7: to=<a@exampl
 
     #[test]
     fn failed_partial_and_skipped_deliveries_alert_and_sent_ones_do_not() {
-        assert!(receipt_alert("a_com", &rec("comms.deliver", "failed")).unwrap().contains("a_com: a message failed"));
-        assert!(receipt_alert("a_com", &rec("comms.deliver", "partial_sent")).unwrap().contains("partial sent"));
-        assert!(receipt_alert("a_com", &rec("comms.deliver", "skipped")).is_some());
-        assert!(receipt_alert("a_com", &rec("comms.deliver", "sent")).is_none());
-        assert!(receipt_alert("a_com", &rec("relay.reply", "failed")).is_none());
+        assert_eq!(receipt_problem(&rec("comms.deliver", "failed")).unwrap().1, "failed");
+        assert_eq!(receipt_problem(&rec("comms.deliver", "partial_sent")).unwrap().1, "partial sent");
+        assert!(receipt_problem(&rec("comms.deliver", "skipped")).is_some());
+        assert!(receipt_problem(&rec("comms.deliver", "sent")).is_none());
+        assert!(receipt_problem(&rec("relay.reply", "failed")).is_none());
+    }
+
+    #[test]
+    fn a_message_retried_five_times_is_one_line_in_words() {
+        let err = "Channel error [email]: Channel not configured".to_string();
+        let mut p: Vec<(String, String, String, String)> = (0..5).map(|_| ("geodineum".into(), "17-0".into(), "failed".into(), err.clone())).collect();
+        p.push(("nierto_com".into(), "18-0".into(), "failed".into(), "Channel error [telegram]: Channel not configured".into()));
+        let subjects = HashMap::from([(("geodineum".to_string(), "17-0".to_string()), "[account watch] aesir: nothing new".to_string())]);
+        let lines = problem_lines(&p, &subjects, "geodineum");
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "geodineum: \"[account watch] aesir: nothing new\" failed: the operators' email is not set up (no email channel in {geodineum}:comms:config) (5 attempts)");
+        assert!(lines[1].starts_with("nierto_com: message 18-0 failed: nierto_com has no Telegram channel"), "{}", lines[1]);
+        assert!(explain("a_com", "Channel error [email]: no_recipients", "geodineum").contains("no recipient"));
     }
 
     #[test]
     fn the_summary_counts_per_site() {
-        let rs = vec![("a_com".to_string(), rec("comms.deliver", "sent")), ("a_com".into(), rec("comms.deliver", "failed")),
-            ("b_com".into(), rec("comms.deliver", "skipped")), ("b_com".into(), rec("other", "sent"))];
+        let with = |cid: &str, st: &str| { let mut r = rec("comms.deliver", st); r.insert("cid".into(), cid.into()); r };
+        let rs = vec![("a_com".to_string(), with("1-0", "sent")), ("a_com".into(), with("2-0", "failed")), ("a_com".into(), with("2-0", "failed")),
+            ("a_com".into(), with("3-0", "failed")), ("a_com".into(), with("3-0", "sent")),
+            ("b_com".into(), with("4-0", "skipped")), ("b_com".into(), rec("other", "sent"))];
         let t = tally(&rs);
-        assert_eq!(t["a_com"], Tally { sent: 1, failed: 1, skipped: 0 });
+        assert_eq!(t["a_com"], Tally { sent: 2, failed: 1, skipped: 0 }, "a retried message counts once, as it ended");
         assert_eq!(t["b_com"], Tally { sent: 0, failed: 0, skipped: 1 });
-        assert!(summary_text("2026-10-26", &t).contains("b_com: 0 sent, 0 failed, 1 skipped"));
+        assert!(summary_text("2026-10-26", &t).contains("b_com: 0 delivered, 0 not delivered, 1 skipped"));
     }
 
     const H: u64 = 3_600_000;
@@ -400,6 +465,7 @@ pub async fn run(conn: &mut redis::aio::MultiplexedConnection, opts: &WatchOptio
     // Every production site's delivery receipts since the last look
     let streams = crate::valkey_scan::scan_keys(conn, &format!("{{*}}:gnode:receipts:{}", opts.environment)).await.unwrap_or_default();
     let mut yesterday: Vec<(String, HashMap<String, String>)> = Vec::new();
+    let mut problems: Vec<(String, String, String, String)> = Vec::new();
     let day_start = now_ms / 86_400_000 * 86_400_000;
     for stream in &streams {
         let site = stream.trim_start_matches('{').split('}').next().unwrap_or("").to_string();
@@ -414,8 +480,8 @@ pub async fn run(conn: &mut redis::aio::MultiplexedConnection, opts: &WatchOptio
         loop {
             let page = xrange_after(conn, stream, &cursor, 500).await;
             for (id, f) in &page {
-                if let Some(a) = receipt_alert(&site, f) {
-                    alerts.push(a);
+                if let Some((cid, st, err)) = receipt_problem(f) {
+                    problems.push((site.clone(), cid, st, err));
                 }
                 cursor = id.clone();
             }
@@ -430,6 +496,24 @@ pub async fn run(conn: &mut redis::aio::MultiplexedConnection, opts: &WatchOptio
             .arg("COUNT").arg(10_000).query_async(conn).await.unwrap_or_default();
         yesterday.extend(ys.into_iter().map(|(_, f)| (site.clone(), f)));
     }
+
+    // Each problem once, named by the subject the producer gave it
+    let mut subjects: HashMap<(String, String), String> = HashMap::new();
+    for (site, cid, _, _) in &problems {
+        let k = (site.clone(), cid.clone());
+        if subjects.contains_key(&k) || !cid.contains('-') {
+            continue;
+        }
+        let stream = format!("{{{site}}}:gnode:comms:{}", opts.environment);
+        let e: Vec<(String, HashMap<String, String>)> =
+            redis::cmd("XRANGE").arg(&stream).arg(cid).arg(cid).query_async(conn).await.unwrap_or_default();
+        let subject = e.first().and_then(|(_, f)| f.get("content")).and_then(|c| serde_json::from_str::<serde_json::Value>(c).ok())
+            .and_then(|v| v.get("subject").and_then(|s| s.as_str()).map(|s| s.chars().take(80).collect::<String>()));
+        if let Some(s) = subject {
+            subjects.insert(k, s);
+        }
+    }
+    alerts.extend(problem_lines(&problems, &subjects, &opts.site));
 
     // Nightly jobs outside COMMS
     if let Ok(dir) = std::fs::read_dir(&opts.jobs_dir) {
@@ -461,7 +545,7 @@ pub async fn run(conn: &mut redis::aio::MultiplexedConnection, opts: &WatchOptio
             match problem {
                 None => st.canary = None,
                 Some(p) if waited > 3 * 3_600_000 => {
-                    alerts.push(format!("Daily mail check: {p}"));
+                    alerts.push(format!("Daily mail check: {p}. It goes to the operators' email, the email channel of site {}: without one nothing can send it.", opts.site));
                     st.canary = None;
                 }
                 Some(_) => {}
@@ -495,9 +579,9 @@ pub async fn run(conn: &mut redis::aio::MultiplexedConnection, opts: &WatchOptio
         let sent: u64 = tallies.values().map(|t| t.sent).sum();
         let failed: u64 = tallies.values().map(|t| t.failed + t.skipped).sum();
         let line = if recent == 0 {
-            format!("COMMS watch, {today}: all well. Yesterday {sent} sent, {failed} failed or skipped, {} sites. The daily mail is on its way; it is checked within the hour.", tallies.len())
+            format!("COMMS watch, {today}: all well. Yesterday COMMS delivered {sent} messages for {} sites, {failed} not delivered. The daily mail is on its way; it is checked within the hour.", tallies.len())
         } else {
-            format!("COMMS watch, {today}: {recent} alerts in the last day (see above). Yesterday {sent} sent, {failed} failed or skipped.")
+            format!("COMMS watch, {today}: {recent} problems in the last day (listed above). Yesterday COMMS delivered {sent} messages, {failed} not delivered.")
         };
         telegram(opts, &line).await;
         st.digest_date = Some(today);
