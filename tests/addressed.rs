@@ -41,11 +41,17 @@ impl NotificationChannel for Recorder {
 }
 
 async fn setup(site: &str, cap: u64, allow_nonprod: bool) -> Option<(MessageDispatcher, Arc<Recorder>)> {
+    setup_with(site, cap, allow_nonprod, HashMap::new()).await
+}
+
+async fn setup_with(site: &str, cap: u64, allow_nonprod: bool, type_caps: HashMap<String, u64>) -> Option<(MessageDispatcher, Arc<Recorder>)> {
     let port = std::env::var("COMMS_TEST_VALKEY_PORT").ok()?;
     let client = redis::Client::open(format!("redis://127.0.0.1:{}", port)).expect("test ValKey");
     let conn = client.get_multiplexed_async_connection().await.expect("test ValKey");
     let mut settings = SiteSettings::new(site);
     settings.addressed.daily_cap = cap;
+    settings.addressed.types = vec!["planning".to_string(), "shop".to_string()];
+    settings.addressed.type_caps = type_caps;
     settings.channels.email = Some(ChannelConfig {
         enabled: true,
         config: HashMap::new(),
@@ -134,4 +140,18 @@ async fn non_production_stays_a_dry_run_and_does_not_count() {
     assert_eq!(r.skipped_channels, vec!["email"]);
     assert!(rec.sent.lock().is_empty());
     assert!(d.dispatch(&message("addr_e", "planning", Some("ana@example.invalid"), "production")).await.unwrap().is_success());
+}
+
+#[tokio::test]
+async fn a_type_with_its_own_allowance_is_not_starved_and_has_its_own_cap() {
+    let Some((d, rec)) = setup_with("addr_f", 1, false, HashMap::from([("shop".to_string(), 2)])).await else { return };
+    assert!(d.dispatch(&message("addr_f", "planning", Some("a@example.invalid"), "production")).await.unwrap().is_success());
+    let spent = d.dispatch(&message("addr_f", "planning", Some("b@example.invalid"), "production")).await.unwrap();
+    assert_eq!(spent.skipped_channels, vec!["email (addressed_cap)"], "the shared allowance is spent");
+    for who in ["c@example.invalid", "d@example.invalid"] {
+        assert!(d.dispatch(&message("addr_f", "shop", Some(who), "production")).await.unwrap().is_success(), "shop mail has its own allowance");
+    }
+    let third = d.dispatch(&message("addr_f", "shop", Some("e@example.invalid"), "production")).await.unwrap();
+    assert_eq!(third.skipped_channels, vec!["email (addressed_cap)"], "and its own cap holds");
+    assert_eq!(rec.sent.lock().len(), 3);
 }

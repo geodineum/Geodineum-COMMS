@@ -278,7 +278,10 @@ A ValKey **string** value holding a single JSON-encoded `SiteSettings` object
       filters { spam_enabled, spam_action, keywords_blocklist,
                 ip_blocklist, email_blocklist },
       retry { max_attempts, base_delay_secs, max_delay_secs },
-      addressed { types [str] (default ["planning"]), daily_cap (int, default 200) } }
+      addressed { types [str] (default ["planning"]), daily_cap (int, default 200),
+                  type_caps {type: int} (default {}: a type named here has its own
+                  daily allowance under {site}:comms:stats:addressed:<type>:YYYYMMDD,
+                  apart from daily_cap, which it neither uses nor is limited by) } }
 
     ChannelConfig { enabled, config {},
       recipients [{ address {key:val}, types [str], min_priority (int, default 5) }],
@@ -313,7 +316,7 @@ A ValKey **string** value holding a single JSON-encoded `SiteSettings` object
     DispatchStatus = Pending | Processing | Sent | Failed | Spam
     SiteSettings { site_id, enabled, channels: ChannelSettings,
                    routing_rules, rate_limits, filters, retry, addressed: AddressedSettings }
-    AddressedSettings { types: Vec<String>, daily_cap: u64 }
+    AddressedSettings { types: Vec<String>, daily_cap: u64, type_caps: HashMap<String, u64> }
     ChannelConfig { enabled, config, recipients: Vec<RecipientConfig>, rate_limit? }
     RecipientConfig { address: HashMap<String,String>, types: Vec<String>,
                       min_priority: u8 }

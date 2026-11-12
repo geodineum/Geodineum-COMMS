@@ -274,7 +274,8 @@ impl MessageDispatcher {
                 }
             }
         } else if addressed.is_some() && result.successful_channels.iter().any(|c| c == "email" || c == "telegram") {
-            if let Err(e) = self.settings_store.count_addressed(site_id).await {
+            let (own, _) = addressed_allowance(&settings, &message.message_type);
+            if let Err(e) = self.settings_store.count_addressed(site_id, own).await {
                 warn!(site_id = %site_id, error = %e, "Could not count an addressed message against the daily cap");
             }
         }
@@ -316,7 +317,8 @@ impl MessageDispatcher {
         if email.parse::<lettre::Address>().is_err() {
             return Ok(Err("addressed_invalid"));
         }
-        if self.settings_store.addressed_sent_today(&message.site_id).await? >= settings.addressed.daily_cap {
+        let (own, cap) = addressed_allowance(settings, &message.message_type);
+        if self.settings_store.addressed_sent_today(&message.site_id, own).await? >= cap {
             return Ok(Err("addressed_cap"));
         }
         Ok(Ok(addressed_recipient_config(email, to.name.as_deref())))
@@ -567,6 +569,14 @@ impl MessageDispatcher {
             .filter(|r| r.should_receive(&message.message_type, message.priority))
             .cloned()
             .collect()
+    }
+}
+
+/// Which daily count an addressed type is held to: its own (`type_caps`), else the site's shared `daily_cap`.
+fn addressed_allowance<'a>(settings: &SiteSettings, kind: &'a str) -> (Option<&'a str>, u64) {
+    match settings.addressed.type_caps.get(kind) {
+        Some(cap) => (Some(kind), *cap),
+        None => (None, settings.addressed.daily_cap),
     }
 }
 

@@ -41,12 +41,16 @@ pub struct SiteSettings {
 
 /// A producer may name the one person a message goes to, only for these types, at most
 /// `daily_cap` a UTC day per site. Planning's invitations and offers are the first user.
+/// A type in `type_caps` has its own allowance a UTC day, counted apart: other types cannot
+/// use it up, and it does not count against `daily_cap` (a shop's order mail).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddressedSettings {
     #[serde(default = "default_addressed_types")]
     pub types: Vec<String>,
     #[serde(default = "default_addressed_cap")]
     pub daily_cap: u64,
+    #[serde(default)]
+    pub type_caps: HashMap<String, u64>,
 }
 
 fn default_addressed_types() -> Vec<String> {
@@ -62,6 +66,7 @@ impl Default for AddressedSettings {
         Self {
             types: default_addressed_types(),
             daily_cap: default_addressed_cap(),
+            type_caps: HashMap::new(),
         }
     }
 }
