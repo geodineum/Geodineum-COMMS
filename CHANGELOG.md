@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows Keep
 
 ### Added
 
+- The operators' route (`to: {operator: true}`) takes type `security`: gShield's findings reach the operators' chat
+  through COMMS instead of sendmail.
 - Addressed messages: an optional `to` names the one person a message is for (email only), for the types a site allows (default `planning`), under a per-site daily cap.
 - The failsafe: every email's Message-ID names its COMMS message; the archive records each channel's result (an
   email's `queued as`); `watch` (hourly timer) alerts on Telegram, straight from the bot, on a missing heartbeat and on

@@ -39,7 +39,8 @@ impl DispatchResult {
 }
 
 /// What a site may send the operators, and how many a day. Not settings: a site writes its own.
-const OPERATOR_TYPES: &[&str] = &["change_request", "lead"];
+/// `security`: gShield's findings, which only the operators may act on.
+const OPERATOR_TYPES: &[&str] = &["change_request", "lead", "security"];
 const OPERATOR_DAILY_CAP: u64 = 50;
 
 /// A message to the operators carries no buttons of the site's (a button in that chat can approve a grant) and says which site sent it.
@@ -598,6 +599,12 @@ mod tests {
             assert!(bad.parse::<lettre::Address>().is_err(), "{:?} parsed", bad);
         }
         assert!("ana@example.invalid".parse::<lettre::Address>().is_ok());
+    }
+
+    #[test]
+    fn the_operators_take_security_findings_and_no_other_new_type() {
+        assert_eq!(OPERATOR_TYPES, &["change_request", "lead", "security"]);
+        assert!(!OPERATOR_TYPES.contains(&"alert"));
     }
 
     #[test]
