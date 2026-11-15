@@ -2,7 +2,7 @@
 # on aesir, as root: install the hourly COMMS watch (config/geodineum-comms-watch.{service,timer}) and run it once.
 #   sudo bash /opt/geodineum/Geodineum-COMMS/scripts/watch-timer.sh [--remove]
 # It alerts on Telegram (the bot COMMS holds; chat COMMS_WATCH_CHAT or the first COMMS_ADMIN_IDS) and mails the
-# operator once a day through COMMS. Idempotent.
+# operator once a day through COMMS, or, with a daily report running (--daily auto), checks the report's mail. Idempotent.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 D=/etc/systemd/system

@@ -86,6 +86,11 @@ recipients through COMMS itself (type `system`, channel email) and, from 20 minu
 handed to the mail server, DKIM-signed, delivered; anything short of that after three hours is an alert. Alerts and
 the daily "all well" line go to Telegram straight from the watcher (the bot token COMMS holds; chat `COMMS_WATCH_CHAT`
 or the first `COMMS_ADMIN_IDS`), so they still go when COMMS is down; a missing daily line means the watcher is.
+`--daily` (`COMMS_WATCH_DAILY`) moves the day's summary to a daily report: `own` is the above; `report` sends neither
+the summary mail nor the "all well" line, and reads back the daily report's own mail instead (today's entry on the bot
+site's stream with `metadata.form_type` `report.daily` and `email` in its channels; none by `--digest-hour` + 3 is an
+alert, once a day); `auto` (default) is `report` once `daily-report.status` is in the jobs directory. Each run records
+`last_run_ms` in its state, so the report can say when the watcher last ran.
 Nightly jobs outside COMMS report through it too: each `<job>.status` in `/var/lib/geodineum-watch`
 (`COMMS_WATCH_JOBS_DIR`; readable by group `adm`) holds `key=value` lines `what`, `max_age_h` (default 26), `ok_ms`
 (last success), `run_ms` (last run), `error` (empty on success). A run newer than the last success with an `error` is

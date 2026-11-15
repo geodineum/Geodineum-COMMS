@@ -120,6 +120,10 @@ pub enum Command {
         /// Telegram chat for alerts (default: COMMS_WATCH_CHAT, else the first COMMS_ADMIN_IDS)
         #[arg(long)]
         chat: Option<String>,
+        /// The day's summary: `own` (its mail and an "all well" line), `report` (the daily report carries it and its
+        /// mail is the one checked), `auto` (report once the daily report has left its status file in the jobs dir)
+        #[arg(long, env = "COMMS_WATCH_DAILY", default_value = "auto")]
+        daily: String,
     },
 
     /// What a site's mail did: each message, its channels, and (for email) what the mail log says

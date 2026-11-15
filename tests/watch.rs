@@ -1,7 +1,7 @@
 //! The watcher against a throwaway ValKey: COMMS_TEST_VALKEY_PORT=<port> cargo test --test watch (tests/valkey.sh starts one).
 
 use std::collections::HashMap;
-use geodineum_comms::watch::{run, WatchOptions};
+use geodineum_comms::watch::{run, Daily, WatchOptions};
 
 async fn conn() -> Option<redis::aio::MultiplexedConnection> {
     let port = std::env::var("COMMS_TEST_VALKEY_PORT").ok()?;
@@ -11,7 +11,7 @@ async fn conn() -> Option<redis::aio::MultiplexedConnection> {
 fn opts(site: &str, log: &std::path::Path) -> WatchOptions {
     WatchOptions { site: site.into(), environment: "production".into(), topology: "wtest".into(), node: "n1".into(),
         mail_logs: vec![log.to_path_buf()], bot_token: None, chat: None, digest_hour: 0, send: false,
-        jobs_dir: log.parent().unwrap().join("jobs") }
+        jobs_dir: log.parent().unwrap().join("jobs"), daily: Daily::Own }
 }
 
 async fn receipt(c: &mut redis::aio::MultiplexedConnection, site: &str, st: &str) {
@@ -101,4 +101,51 @@ async fn a_nightly_job_that_failed_or_went_quiet_is_an_alert() {
     let a = mine(run(&mut c, &o, t0 + 27 * H).await.unwrap());
     assert!(a.iter().any(|x| x.contains("no success in 26 h")), "{a:?}");
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn with_the_daily_report_the_watcher_says_nothing_daily_and_checks_the_reports_mail() {
+    let Some(mut c) = conn().await else { return };
+    let dir = std::env::temp_dir().join(format!("wr-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("jobs")).unwrap();
+    let log = dir.join("mail.log");
+    std::fs::write(&log, "").unwrap();
+    let o = WatchOptions { topology: "wrtest".into(), digest_hour: 5, daily: Daily::Report, ..opts("wr_bot", &log) };
+    let _: () = redis::cmd("SET").arg("{wrtest}:gnode:heartbeat:production:comms:n1").arg("{}").query_async(&mut c).await.unwrap();
+    let day: u64 = 1_800_000_000_000 / 86_400_000 * 86_400_000;
+    let stream = "{wr_bot}:gnode:comms:production";
+    let state = |c: &mut redis::aio::MultiplexedConnection| {
+        let mut c = c.clone();
+        async move { serde_json::from_str::<serde_json::Value>(&redis::cmd("GET").arg("{wr_bot}:gnode:comms:watch").query_async::<String>(&mut c).await.unwrap()).unwrap() }
+    };
+
+    assert!(ours(run(&mut c, &o, day + 6 * H).await.unwrap()).is_empty(), "no report yet: it waits");
+    let n: usize = redis::cmd("XLEN").arg(stream).query_async(&mut c).await.unwrap();
+    assert_eq!(n, 0, "no summary mail of its own");
+    assert!(state(&mut c).await["last_run_ms"].as_u64() == Some(day + 6 * H), "says when it last ran");
+
+    let at = day + 6 * H + 45 * 60_000;
+    let _: String = redis::cmd("XADD").arg(stream).arg(format!("{at}-0")).arg(&[("id", "report-x-email"), ("type", "alert"),
+        ("metadata", r#"{"form_type":"report.daily"}"#), ("dispatch", r#"{"channels":["email"]}"#)]).query_async(&mut c).await.unwrap();
+    assert!(ours(run(&mut c, &o, day + 7 * H).await.unwrap()).is_empty());
+    let st = state(&mut c).await;
+    assert_eq!(st["canary"]["id"].as_str(), Some("report-x-email"), "the report's mail is the one checked");
+    assert_eq!(st["canary"]["sent_ms"].as_u64(), Some(at));
+
+    std::fs::write(&log, "Oct 26 06:00:01 h postfix/cleanup[1]: ABC123: message-id=<comms.report-x-email@geodineum.com>\n\
+Oct 26 06:00:01 h opendkim[2]: ABC123: DKIM-Signature field added (s=default, d=geodineum.com)\n\
+Oct 26 06:00:05 h postfix/smtp[3]: ABC123: to=<op@example.invalid>, relay=mx.example.invalid[1.2.3.4]:25, dsn=2.0.0, status=sent (250 ok)\n").unwrap();
+    let _: () = redis::cmd("HSET").arg(format!("{{wr_bot}}:gnode:comms:status:{at}-0")).arg("status").arg("sent").query_async(&mut c).await.unwrap();
+    assert!(ours(run(&mut c, &o, day + 8 * H).await.unwrap()).is_empty());
+    assert!(state(&mut c).await["canary"].is_null(), "read back and cleared");
+
+    assert!(ours(run(&mut c, &o, day + 24 * H + 6 * H).await.unwrap()).is_empty(), "the next day, before the report: waits");
+    let a = ours(run(&mut c, &o, day + 24 * H + 8 * H).await.unwrap());
+    assert!(a.len() == 1 && a[0].contains("daily report has not reached COMMS"), "{a:?}");
+    assert!(ours(run(&mut c, &o, day + 24 * H + 9 * H).await.unwrap()).is_empty(), "said once a day");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+fn ours(a: Vec<String>) -> Vec<String> {
+    a.into_iter().filter(|x| !x.starts_with("wt_a")).collect()
 }

@@ -134,9 +134,10 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Start) | None => {
             run_daemon(&cli, &config).await?;
         }
-        Some(Command::Watch { ref mail_log, digest_hour, ref chat }) => {
+        Some(Command::Watch { ref mail_log, digest_hour, ref chat, ref daily }) => {
             let client = redis::Client::open(cli.redis_url()?)?;
             let mut conn = client.get_multiplexed_tokio_connection().await?;
+            let jobs_dir: std::path::PathBuf = std::env::var("COMMS_WATCH_JOBS_DIR").unwrap_or_else(|_| "/var/lib/geodineum-watch".into()).into();
             let admin_first = std::env::var("COMMS_ADMIN_IDS").ok().and_then(|v| v.split(',').next().map(|s| s.trim().to_string())).filter(|s| !s.is_empty());
             let opts = geodineum_comms::watch::WatchOptions {
                 site: config.inbound.as_ref().and_then(|i| i.site_id.clone()).unwrap_or_else(|| "geodineum".into()),
@@ -148,7 +149,8 @@ async fn main() -> anyhow::Result<()> {
                 chat: chat.clone().or_else(|| std::env::var("COMMS_WATCH_CHAT").ok()).or(admin_first),
                 digest_hour,
                 send: cli.delivery != geodineum_comms::config::Delivery::Off,
-                jobs_dir: std::env::var("COMMS_WATCH_JOBS_DIR").unwrap_or_else(|_| "/var/lib/geodineum-watch".into()).into(),
+                jobs_dir: jobs_dir.clone(),
+                daily: geodineum_comms::watch::daily_mode(daily, &jobs_dir),
             };
             let alerts = geodineum_comms::watch::run(&mut conn, &opts, geodineum_comms::receipt::now_ms()).await?;
             println!("comms watch on {}: {} alert{}", opts.node, alerts.len(), if alerts.len() == 1 { "" } else { "s" });

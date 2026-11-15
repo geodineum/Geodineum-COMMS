@@ -326,6 +326,29 @@ Oct 26 10:40:05 aesir-solutions postfix/smtp[1490834]: 51AA0121AD7: to=<a@exampl
     const T0: u64 = 1_790_000_000_000;
 
     #[test]
+    fn the_daily_summary_moves_to_the_report_once_the_report_runs() {
+        let dir = std::env::temp_dir().join(format!("wd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(daily_mode("auto", &dir), Daily::Own);
+        assert_eq!(daily_mode("report", &dir), Daily::Report);
+        std::fs::write(dir.join("daily-report.status"), "what=daily report\n").unwrap();
+        assert_eq!(daily_mode("auto", &dir), Daily::Report);
+        assert_eq!(daily_mode("own", &dir), Daily::Own);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_report_mail_is_found_by_its_kind_and_channel() {
+        let e = |id: &str, meta: &str, ch: &str| (format!("{id}-0"), HashMap::from([
+            ("id".to_string(), format!("m{id}")), ("metadata".to_string(), meta.to_string()),
+            ("dispatch".to_string(), format!(r#"{{"channels":["{ch}"]}}"#))]));
+        let r = r#"{"form_type":"report.daily"}"#;
+        let entries = vec![e("1", r, "email"), e("2", r, "telegram"), e("3", r#"{"form_type":"alert"}"#, "email")];
+        assert_eq!(report_mail(&entries), Some(("m1".into(), "1-0".into())));
+        assert_eq!(report_mail(&entries[1..]), None);
+    }
+
+    #[test]
     fn a_job_status_file_is_read_with_defaults() {
         let j = parse_job_status("sites-backup", "what=sites backup\nok_ms=5\nrun_ms=5\nerror=\nnoise\n");
         assert_eq!(j, JobStatus { what: "sites backup".into(), max_age_h: 26, ok_ms: 5, run_ms: 5, error: String::new() });
@@ -376,6 +399,35 @@ pub struct WatchOptions {
     pub send: bool,
     /// Nightly jobs' status files (`<job>.status`), read by the watcher's group.
     pub jobs_dir: std::path::PathBuf,
+    /// Where the day's summary goes: its own mail and Telegram line, or the daily report.
+    pub daily: Daily,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Daily {
+    /// The watcher mails its own summary and says "all well" on Telegram.
+    Own,
+    /// The daily report carries the counts; its mail is the one read back from the mail log.
+    Report,
+}
+
+/// `report`, `own`, or `auto`: the report once the daily report job has left its status file.
+pub fn daily_mode(setting: &str, jobs_dir: &std::path::Path) -> Daily {
+    match setting {
+        "report" => Daily::Report,
+        "own" | "telegram" => Daily::Own,
+        _ if jobs_dir.join("daily-report.status").exists() => Daily::Report,
+        _ => Daily::Own,
+    }
+}
+
+/// The daily report's mail among a stream's entries: metadata `form_type` `report.daily`, sent by email.
+pub fn report_mail(entries: &[(String, HashMap<String, String>)]) -> Option<(String, String)> {
+    entries.iter().rev().find(|(_, f)| {
+        let meta = f.get("metadata").and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok());
+        let kind = meta.as_ref().and_then(|m| m.get("form_type")).and_then(|v| v.as_str()) == Some("report.daily");
+        kind && f.get("dispatch").is_some_and(|d| d.contains("email"))
+    }).map(|(entry, f)| (f.get("id").cloned().unwrap_or_else(|| entry.clone()), entry.clone()))
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -392,6 +444,8 @@ struct WatchState {
     heartbeat_alerted_ms: u64,
     #[serde(default)]
     jobs: HashMap<String, JobSeen>,
+    #[serde(default)]
+    last_run_ms: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -556,7 +610,20 @@ pub async fn run(conn: &mut redis::aio::MultiplexedConnection, opts: &WatchOptio
     // Once a day: the summary mail (the canary) and the line that says the watcher lives
     let today = day_of(now_ms);
     let hour = ((now_ms / 3_600_000) % 24) as u32;
-    if hour >= opts.digest_hour && st.digest_date.as_deref() != Some(today.as_str()) {
+    if opts.daily == Daily::Report && hour >= opts.digest_hour && st.digest_date.as_deref() != Some(today.as_str()) {
+        let stream = format!("{{{}}}:gnode:comms:{}", opts.site, opts.environment);
+        let todays: Vec<(String, HashMap<String, String>)> = redis::cmd("XRANGE").arg(&stream).arg(format!("{day_start}-0")).arg("+")
+            .arg("COUNT").arg(2_000).query_async(conn).await.unwrap_or_default();
+        if let Some((id, entry)) = report_mail(&todays) {
+            let sent_ms = entry.split('-').next().and_then(|m| m.parse().ok()).unwrap_or(now_ms);
+            st.canary = Some(Canary { id, entry, sent_ms });
+            st.digest_date = Some(today.clone());
+        } else if hour >= opts.digest_hour + 3 {
+            alerts.push(format!("The daily report has not reached COMMS today (no mail of type report.daily on {stream}): its mail is also the daily mail check."));
+            st.digest_date = Some(today.clone());
+        }
+    }
+    if opts.daily == Daily::Own && hour >= opts.digest_hour && st.digest_date.as_deref() != Some(today.as_str()) {
         let tallies = tally(&yesterday);
         let body = summary_text(&day_of(day_start.saturating_sub(86_400_000)), &tallies);
         let id = format!("watch-{}-{}", today, now_ms % 100_000);
@@ -594,6 +661,7 @@ pub async fn run(conn: &mut redis::aio::MultiplexedConnection, opts: &WatchOptio
             st.alerts.push((now_ms, a.chars().take(200).collect()));
         }
     }
+    st.last_run_ms = now_ms;
     st.alerts.retain(|(t, _)| now_ms.saturating_sub(*t) < 7 * 86_400_000);
     st.alerts.truncate(200);
     let _: () = redis::cmd("SET").arg(&key).arg(serde_json::to_string(&st)?).query_async(conn).await?;

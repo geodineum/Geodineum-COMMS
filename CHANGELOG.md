@@ -6,6 +6,9 @@ All notable changes to this project are documented here. The format follows Keep
 
 ### Added
 
+- `watch --daily` (`COMMS_WATCH_DAILY`, default `auto`): with a daily report running, the watcher sends no summary mail
+  and no "all well" line; it reads the report's own mail back from the mail log instead and alerts when none came.
+  Its state records when it last ran.
 - The operators' route (`to: {operator: true}`) takes type `security`: gShield's findings reach the operators' chat
   through COMMS instead of sendmail.
 - Addressed messages: an optional `to` names the one person a message is for (email only), for the types a site allows (default `planning`), under a per-site daily cap.
