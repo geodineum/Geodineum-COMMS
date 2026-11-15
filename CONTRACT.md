@@ -36,7 +36,12 @@ Interfaces other components may rely on.
 - **Periodic site discovery**: streams are discovered at startup and
   re-discovered every `consumer.discovery_interval_secs` (default 60; `0` =
   startup-only), so sites onboarded after daemon start are consumed without a
-  restart. `src/consumer/stream_reader.rs`, `src/config.rs`
+  restart. Discovery also runs at once (looked at no more than once a second,
+  between reads) when `{GNODE_TOPOLOGY_NAMESPACE}:gnode:broadcast:global`
+  (default `geodineum`) carries `site_registered`, `component_deployed`,
+  `service_registered` or `service_deregistered`; started from the stream's
+  newest entry, never replayed. Without the read grant the look turns off with
+  one warning and the interval stays. `src/consumer/stream_reader.rs`, `src/config.rs`
 
 ### 1.2 Inbound operator replies (stream producer)
 
@@ -162,6 +167,7 @@ What COMMS needs, and from which component.
 | Twilio credentials | Per-site `account_sid`, `auth_token` from `{site_id}:comms:config` → `channels.sms.config`; ISO phone numbers with country code. Same plain-value storage caveat as SMTP | gCore admin (per-site settings) |
 | Spam filter | Only messages a visitor sent are checked (a `sender.email`, or a `sender.ip` that is not loopback); alerts, login codes, receipts and test sends never are. Signals add to a score, spam at 0.7: blocked IP 1.0, blocked email domain 0.8, an address cut into five or more pieces with four of one letter 0.5, gibberish sender name 0.5, gibberish or random-token subject 0.4, three or more links 0.4, each blocked keyword as a whole word 0.3. No weak signal reaches 0.7 alone: dots in an address never make spam by themselves. A site whose `filters.spam_enabled` is true is judged by the built-in lists plus its own, and its `spam_action` decides: `flag` delivers with the subject marked `[spam?]`, `quarantine` archives `status=spam` without dispatch, `reject` (gCore's `drop`) neither dispatches nor archives. Every other site meets the daemon-wide filter (`spam_filter` in `config/default.yaml`, its lists additive over the built-ins, **on** by default since 2026-11-09), which quarantines. Held messages: `geodineum-comms messages <site> --status spam` | site settings, operator config |
 | gNode site registry | `gnode:site:{site_id}:meta` — scanned as a secondary site-discovery fallback when no `{*}:gnode:comms:{env}` stream exists for a site | gNode daemon |
+| Discovery events | `{constellation}:gnode:broadcast:global`, read with `XREVRANGE`/`XREAD` (no group, never blocking); entries `type=<event>` (gNode CONTRACT.md, broadcast stream). Needs the read grant `%R~*:gnode:broadcast:global` | `onboard-service.sh` (`site_registered`), the installer's deploy sweep (`component_deployed`) |
 
 Evidence: `src/settings/store.rs`, `src/settings/models.rs`,
 `src/dtap.rs`, `src/channels/email/smtp.rs`, `src/config.rs`,

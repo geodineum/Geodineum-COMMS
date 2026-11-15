@@ -12,6 +12,12 @@ use crate::error::{CommsError, Result};
 /// Consumer group name for Geodineum-COMMS
 const CONSUMER_GROUP: &str = "geodineum_comms_dispatch";
 
+/// Events on the constellation's broadcast stream after which discovery runs at once.
+const DISCOVERY_EVENTS: [&str; 4] = ["site_registered", "component_deployed", "service_registered", "service_deregistered"];
+
+/// The broadcast stream is looked at no more often than this.
+const BROADCAST_CHECK: std::time::Duration = std::time::Duration::from_secs(1);
+
 // per-field byte cap for tenant-submitted JSON
 // blobs arriving on ValKey `{site}:gnode:comms:*` streams. 100 MB metadata
 // loads wholesale into RAM without this cap. serde_json's default recursion
@@ -77,6 +83,11 @@ pub struct StreamConsumer {
     discovery_interval: std::time::Duration,
     /// Last time discovery ran (startup or periodic).
     last_discovery: std::time::Instant,
+    /// `{constellation}:gnode:broadcast:global`; None when not configured or not readable.
+    broadcast_key: Option<String>,
+    /// Last entry seen there; None until the first look.
+    broadcast_last_id: Option<String>,
+    last_broadcast_check: std::time::Instant,
 }
 
 impl StreamConsumer {
@@ -94,7 +105,16 @@ impl StreamConsumer {
             last_ids: HashMap::new(),
             discovery_interval: std::time::Duration::ZERO,
             last_discovery: std::time::Instant::now(),
+            broadcast_key: None,
+            broadcast_last_id: None,
+            last_broadcast_check: std::time::Instant::now(),
         }
+    }
+
+    /// Re-run discovery as soon as the constellation announces a registration or a deploy.
+    pub fn with_broadcast(mut self, constellation: &str) -> Self {
+        self.broadcast_key = Some(format!("{{{}}}:gnode:broadcast:global", constellation));
+        self
     }
 
     /// Enable periodic site re-discovery (consumer.discovery_interval_secs).
@@ -148,8 +168,10 @@ impl StreamConsumer {
     /// A discovery failure is logged and retried next interval — it must
     /// never take down the read loop for the already-known sites.
     async fn maybe_rediscover(&mut self) {
-        if self.discovery_interval.is_zero()
-            || self.last_discovery.elapsed() < self.discovery_interval
+        let announced = self.announced().await;
+        if !announced
+            && (self.discovery_interval.is_zero()
+                || self.last_discovery.elapsed() < self.discovery_interval)
         {
             return;
         }
@@ -157,6 +179,64 @@ impl StreamConsumer {
             warn!(error = %e, "Periodic site re-discovery failed; will retry next interval");
             self.last_discovery = std::time::Instant::now();
         }
+    }
+
+    /// Whether the broadcast stream carried a discovery event since the last look. Never
+    /// blocks. Started from the stream's newest entry, so history is not replayed. A refused
+    /// read turns the look off for good (the interval stays); any other failure retries.
+    async fn announced(&mut self) -> bool {
+        let Some(key) = self.broadcast_key.clone() else { return false };
+        if self.broadcast_last_id.is_some() && self.last_broadcast_check.elapsed() < BROADCAST_CHECK {
+            return false;
+        }
+        self.last_broadcast_check = std::time::Instant::now();
+
+        let last = match self.broadcast_last_id.clone() {
+            Some(id) => id,
+            None => {
+                let newest: redis::RedisResult<Vec<StreamEntry>> = redis::cmd("XREVRANGE")
+                    .arg(&key).arg("+").arg("-").arg("COUNT").arg(1)
+                    .query_async(&mut self.conn).await;
+                match newest {
+                    Ok(v) => {
+                        let id = v.first().map(|e| e.id.clone()).unwrap_or_else(|| "0-0".to_string());
+                        self.broadcast_last_id = Some(id);
+                        return false;
+                    }
+                    Err(e) => return self.broadcast_failed(&key, e),
+                }
+            }
+        };
+
+        let read: redis::RedisResult<Option<Vec<StreamReadReply>>> = redis::cmd("XREAD")
+            .arg("COUNT").arg(100).arg("STREAMS").arg(&key).arg(&last)
+            .query_async(&mut self.conn).await;
+        let replies = match read {
+            Ok(r) => r.unwrap_or_default(),
+            Err(e) => return self.broadcast_failed(&key, e),
+        };
+        let mut hit = Vec::new();
+        for entry in replies.into_iter().flat_map(|r| r.entries) {
+            let t = entry.fields.get("type").or_else(|| entry.fields.get("t")).map(String::as_str).unwrap_or("");
+            if DISCOVERY_EVENTS.contains(&t) {
+                hit.push(t.to_string());
+            }
+            self.broadcast_last_id = Some(entry.id);
+        }
+        if !hit.is_empty() {
+            info!(events = %hit.join(","), "Re-discovering sites on broadcast");
+        }
+        !hit.is_empty()
+    }
+
+    fn broadcast_failed(&mut self, key: &str, e: RedisError) -> bool {
+        if e.to_string().contains("NOPERM") {
+            warn!(stream = %key, "No read grant on the broadcast stream; new sites wait for the discovery interval");
+            self.broadcast_key = None;
+        } else {
+            debug!(stream = %key, error = %e, "Broadcast read failed; retried on the next loop");
+        }
+        false
     }
 
     /// Ensure consumer group exists for a stream

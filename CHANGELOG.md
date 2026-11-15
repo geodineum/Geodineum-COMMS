@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows Keep
 
 ### Added
 
+- Site discovery runs at once when `{c}:gnode:broadcast:global` announces `site_registered` or `component_deployed`
+  (looked at between reads, at most once a second); the interval stays. Needs the read grant `%R~*:gnode:broadcast:global`.
 - `watch --daily` (`COMMS_WATCH_DAILY`, default `auto`): with a daily report running, the watcher sends no summary mail
   and no "all well" line; it reads the report's own mail back from the mail log instead and alerts when none came.
   Its state records when it last ran.

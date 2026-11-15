@@ -299,7 +299,8 @@ async fn run_daemon(cli: &Cli, config: &Config) -> anyhow::Result<()> {
     let mut consumer = StreamConsumer::new(conn.clone(), site_discovery, node_id.clone())
         .with_block_ms(config.consumer.block_ms)
         .with_batch_size(config.consumer.batch_size)
-        .with_discovery_interval(config.consumer.discovery_interval_secs);
+        .with_discovery_interval(config.consumer.discovery_interval_secs)
+        .with_broadcast(&std::env::var("GNODE_TOPOLOGY_NAMESPACE").unwrap_or_else(|_| "geodineum".to_string()));
 
     // Initialize consumer groups
     consumer.initialize_groups().await?;
