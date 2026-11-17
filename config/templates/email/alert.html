@@ -1,45 +1,74 @@
-<!-- subject: [ALERT] {{ content.subject | default(value="System Alert") }} -->
+<!-- subject: {{ content.subject | default(value="Geodineum notice") }} -->
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ content.subject | default(value="System Alert") }}</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
-        .header { background: #dc2626; color: white; padding: 20px; border-radius: 8px 8px 0 0; }
-        .header.warning { background: #f59e0b; }
-        .header.info { background: #2563eb; }
-        .content { background: #fef2f2; padding: 20px; border: 1px solid #fecaca; }
-        .content.warning { background: #fffbeb; border-color: #fde68a; }
-        .content.info { background: #eff6ff; border-color: #bfdbfe; }
-        .alert-body { background: white; padding: 15px; border-radius: 4px; margin: 15px 0; }
-        .meta { font-size: 12px; color: #6b7280; border-top: 1px solid #e5e7eb; padding-top: 15px; margin-top: 20px; }
-        .priority { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; }
-        .priority-1 { background: #dc2626; color: white; }
-        .priority-2 { background: #f59e0b; color: white; }
-        .priority-3 { background: #2563eb; color: white; }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<meta name="supported-color-schemes" content="dark">
+<title>{{ content.subject | default(value="Geodineum notice") }}</title>
 </head>
-<body>
-    <div class="header">
-        <h2 style="margin: 0;">
-            <span class="priority priority-{{ message.priority | default(value=3) }}">P{{ message.priority | default(value=3) }}</span>
-            {{ content.subject | default(value="System Alert") }}
-        </h2>
-    </div>
-    <div class="content">
-        <div class="alert-body">
-            <p>{{ content.body | default(value="An alert was triggered.") }}</p>
-        </div>
-
-        <div class="meta">
-            <p><strong>Site:</strong> {{ site_id }}</p>
-            <p><strong>Alert Type:</strong> {{ message.message_type | default(value="alert") }}</p>
-            <p><strong>Priority:</strong> {{ message.priority | default(value=3) }}</p>
-            <p><strong>Time:</strong> {{ timestamp }}</p>
-            {% if metadata.environment %}<p><strong>Environment:</strong> {{ metadata.environment }}</p>{% endif %}
-        </div>
-    </div>
+{%- set sans = "'Josefin Sans','Century Gothic',Futura,'Segoe UI',Helvetica,Arial,sans-serif" -%}
+{%- set serif = "Georgia,'Times New Roman',serif" -%}
+{%- set mono = "ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace" -%}
+{%- set p = message.priority | default(value=3) -%}
+{%- if p <= 1 %}{% set tone = "#e07a6a" %}{% set level = "Urgent" %}
+{%- elif p == 2 %}{% set tone = "#c9a961" %}{% set level = "For your attention" %}
+{%- else %}{% set tone = "#888892" %}{% set level = "For your information" %}{% endif -%}
+{%- set subject = content.subject | default(value="") -%}
+<body style="margin:0;padding:0;background:#0a0a0d;" bgcolor="#0a0a0d">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#0a0a0d" style="background:#0a0a0d;padding:28px 12px;">
+<tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#111118" style="max-width:640px;background:#111118;border:1px solid #2a2a35;font-family:{{ sans }};color:#d4d4dc;">
+<tr><td style="padding:22px 28px 18px;border-bottom:1px solid #2a2a35;">
+<span style="font-family:{{ sans }};font-size:13px;font-weight:600;letter-spacing:0.32em;color:#c9a961;">{{ metadata.brand | default(value="GEODINEUM") | upper }}</span>
+</td></tr>
+<tr><td style="height:3px;background:{{ tone }};font-size:0;line-height:0;">&nbsp;</td></tr>
+<tr><td style="padding:26px 28px 6px;">
+<div style="font-family:{{ sans }};font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:{{ tone }};">{{ level }}</div>
+<h1 style="margin:8px 0 0;font-family:{{ serif }};font-weight:500;font-size:24px;line-height:1.25;color:#e8c468;">{{ subject }}</h1>
+</td></tr>
+<tr><td style="padding:10px 28px 26px;font-size:15px;line-height:1.6;">
+{%- set_global gap = false -%}
+{%- for line in content.body | default(value="") | split(pat="\n") -%}
+{%- set t = line | trim -%}
+{%- if loop.first and t == subject -%}
+{%- elif t == "" -%}{%- set_global gap = true -%}
+{%- else -%}
+{%- set top = "4px" -%}{%- if gap %}{% set top = "18px" %}{% endif -%}
+{%- if t is matching("^on [A-Za-z0-9][A-Za-z0-9.-]*: ") -%}
+{%- set parts = t | split(pat=": ") -%}
+<div style="margin:{{ top }} 0 0;padding:10px 14px;background:#18181f;border-left:2px solid #8d7944;font-family:{{ mono }};font-size:13px;line-height:1.5;color:#e8c468;word-break:break-all;"><span style="color:#888892;">{{ parts | first }}:</span> {{ parts | slice(start=1) | join(sep=": ") }}</div>
+{%- elif line is starting_with("- ") -%}
+<div style="margin:{{ top }} 0 0;padding-left:18px;text-indent:-18px;"><span style="color:#c9a961;">&#9670;&nbsp;&nbsp;</span>{{ t | trim_start_matches(pat="- ") }}</div>
+{%- elif t is matching("^[0-9]+\. ") -%}
+{%- set parts = t | split(pat=". ") -%}
+<div style="margin:{{ top }} 0 0;padding:12px 0 0 28px;text-indent:-28px;border-top:1px solid #2a2a35;color:#ededf2;"><span style="display:inline-block;width:28px;text-indent:0;font-family:{{ serif }};color:#c9a961;">{{ parts | first }}</span>{{ parts | slice(start=1) | join(sep=". ") }}</div>
+{%- elif line is starting_with("    ") -%}
+<div style="margin:2px 0 0;padding-left:34px;font-size:14px;color:#a4a4ae;">{{ t }}</div>
+{%- elif line is starting_with("   ") and line is not starting_with("    ") -%}
+<div style="margin:2px 0 0;padding-left:28px;font-size:14px;color:#a4a4ae;">{{ t }}</div>
+{%- elif line is starting_with("  ") -%}
+<div style="margin:{{ top }} 0 0;padding-left:16px;color:#c4c4cc;">{{ t }}</div>
+{%- elif gap and t is not ending_with(".") and t | length < 90 -%}
+<h2 style="margin:26px 0 6px;padding-top:14px;border-top:1px solid #2a2a35;font-family:{{ serif }};font-weight:500;font-size:18px;color:#e8c468;">{{ t }}</h2>
+{%- else -%}
+<p style="margin:{{ top }} 0 0;">{{ t }}</p>
+{%- endif -%}
+{%- set_global gap = false -%}
+{%- endif -%}
+{%- endfor %}
+</td></tr>
+{%- if metadata.cta_url %}
+<tr><td style="padding:0 28px 26px;">
+<a href="{{ metadata.cta_url }}" style="display:inline-block;padding:11px 22px;border:1px solid #c9a961;color:#e8c468;text-decoration:none;font-family:{{ sans }};font-size:14px;letter-spacing:0.06em;">{{ metadata.cta_label | default(value="Open") }}</a>
+</td></tr>
+{%- endif %}
+<tr><td style="padding:16px 28px;border-top:1px solid #2a2a35;font-size:12px;line-height:1.5;color:#6f6f7a;">
+{%- if metadata.source %}{{ metadata.source }} · {% endif %}{{ site_id }} · {{ timestamp | replace(from="T", to=" ") | replace(from="Z", to=" UTC") }}
+</td></tr>
+</table>
+</td></tr>
+</table>
 </body>
 </html>

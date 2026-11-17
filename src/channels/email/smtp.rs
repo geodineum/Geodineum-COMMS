@@ -375,7 +375,12 @@ impl NotificationChannel for EmailChannel {
 <p><small>Site: {} | Type: {} | Time: {}</small></p>
 </body>
 </html>"#,
-                    subject, subject, body, message.site_id, message.message_type, message.timestamp
+                    tera::escape_html(&subject),
+                    tera::escape_html(&subject),
+                    tera::escape_html(&body).replace('\n', "<br>\n"),
+                    tera::escape_html(&message.site_id),
+                    tera::escape_html(&message.message_type),
+                    tera::escape_html(&message.timestamp)
                 );
 
                 Ok(RenderedContent::plain(body)

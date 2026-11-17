@@ -376,3 +376,46 @@ mod tg_template_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod email_alert_tests {
+    use super::*;
+
+    async fn email(priority: u8, subject: &str, body: &str) -> String {
+        let r = TemplateRenderer::with_defaults().unwrap();
+        let mut ctx = tera::Context::new();
+        ctx.insert("content", &serde_json::json!({"subject": subject, "body": body}));
+        ctx.insert("message", &serde_json::json!({"priority": priority}));
+        ctx.insert("site_id", "geodineum");
+        ctx.insert("timestamp", "2026-11-17T06:45:02Z");
+        ctx.insert("metadata", &serde_json::json!({"source": "daily-report", "compact": true}));
+        ctx.insert("sender", &serde_json::json!(null));
+        let out = r.render("email/alert.html", &ctx).await.unwrap();
+        assert_eq!(out.subject.as_deref(), Some(subject));
+        assert!(out.body.lines().all(|l| l.len() < 200), "the text part keeps one line per line: {}", out.body);
+        out.body_html.unwrap()
+    }
+
+    /// The operators' mails are plain text with a shape (sections, lists, commands); the mail lays that shape out
+    /// instead of running it together, and nothing in the text becomes markup.
+    #[tokio::test]
+    async fn an_operator_mail_lays_out_its_text() {
+        let subject = "Daily report for 2026-11-16, aesir-solutions";
+        let body = format!("{subject}\n\nFlags (2)\n- COMMS: site_a 1 delivery failed\n- gShield: <script>x</script>\n\n\
+            Security of aesir-solutions\n  logins: 3 by 1 account\n    logins op: 198.51.100.9 x2\n\n\
+            1. dirtylingua.com: public vhost (x.conf)\n   Most likely: an old site. [52adeccd34]\n\n\
+            Look at it:\non aesir: sudo ls -la /var/www/f\n\nEvery number above is read from its source.");
+        let html = email(2, subject, &body).await;
+        println!("{html}");
+        assert_eq!(html.matches(subject).count(), 2, "subject twice (title and heading), the body's own copy dropped");
+        assert!(!html.contains("[ALERT]"));
+        assert!(html.contains("&lt;script&gt;x&lt;&#x2F;script&gt;") && !html.contains("<script>"), "text escaped");
+        assert!(html.contains(">Flags (2)</h2>") && html.contains(">Security of aesir-solutions</h2>"), "sections");
+        assert!(html.contains("COMMS: site_a 1 delivery failed</div>") && !html.contains("- COMMS"), "list items");
+        assert!(html.contains("on aesir:</span> sudo ls -la &#x2F;var&#x2F;www&#x2F;f</div>"), "a command is its own block");
+        assert!(html.contains(">1</span>dirtylingua.com: public vhost (x.conf)</div>"), "numbered finding");
+        assert!(html.contains("<p style=\"margin:18px 0 0;\">Every number above is read from its source.</p>"), "a sentence stays a paragraph");
+        assert!(html.contains("For your attention") && html.contains("2026-11-17 06:45:02 UTC"));
+        assert!(email(1, "S", "B").await.contains("Urgent"));
+    }
+}
