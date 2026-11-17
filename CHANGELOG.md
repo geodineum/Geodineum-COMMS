@@ -6,6 +6,9 @@ All notable changes to this project are documented here. The format follows Keep
 
 ### Added
 
+- A mail's `cta_url`, `site_url` and `logo_url` are kept only when they are https on the sending site's own domain
+  (the one its id names, or one in its settings' new `link_domains`) or a subdomain of it; any other is dropped with a
+  warning, so a message written to a site's stream by anyone else cannot carry a button to another host.
 - Site discovery runs at once when `{c}:gnode:broadcast:global` announces `site_registered` or `component_deployed`
   (looked at between reads, at most once a second); the interval stays. Needs the read grant `%R~*:gnode:broadcast:global`.
 - `watch --daily` (`COMMS_WATCH_DAILY`, default `auto`): with a daily report running, the watcher sends no summary mail

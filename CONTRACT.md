@@ -60,6 +60,16 @@ per 60 s) names the service and the fix. With no default configured the mail
 is sent unmodified and the warning says so. Mail never silently stops; it
 also never silently dies at a recipient's DMARC because we signed nothing.
 
+**Links in a mail point only at the sending site.** A message's metadata
+`cta_url` (the button), `site_url` (the footer link) and `logo_url` (the logo)
+are kept only when the URL is https, has no credentials and no port, and its
+host is the site's own domain or a subdomain of it. The site's own domain is
+the one its id names (`innovagent_nl` is innovagent.nl: `_` read as `.`, so a
+hyphenated look-alike never matches; the id comes from the stream key, never
+the body), plus any listed in its settings' `link_domains`. Anything else is
+removed before the message reaches a channel, with a warning naming the site,
+the message and the host: the mail goes out without that button, link or logo.
+
 ### 1.2a The Geodineum bot (Telegram, operators only)
 
 The bot COMMS polls (`TELEGRAM_BOT_TOKEN`, site `COMMS_INBOUND_SITE`, default `geodineum`) carries the
@@ -292,7 +302,9 @@ A ValKey **string** value holding a single JSON-encoded `SiteSettings` object
       addressed { types [str] (default ["planning"]), daily_cap (int, default 200),
                   type_caps {type: int} (default {}: a type named here has its own
                   daily allowance under {site}:comms:stats:addressed:<type>:YYYYMMDD,
-                  apart from daily_cap, which it neither uses nor is limited by) } }
+                  apart from daily_cap, which it neither uses nor is limited by) },
+      link_domains [str] (default []: domains besides the one the site id names that a
+                  mail's cta_url, site_url and logo_url may point at, subdomains included) }
 
     ChannelConfig { enabled, config {},
       recipients [{ address {key:val}, types [str], min_priority (int, default 5) }],
@@ -326,7 +338,8 @@ A ValKey **string** value holding a single JSON-encoded `SiteSettings` object
                    attempts: u32, last_attempt?, next_retry? }
     DispatchStatus = Pending | Processing | Sent | Failed | Spam
     SiteSettings { site_id, enabled, channels: ChannelSettings,
-                   routing_rules, rate_limits, filters, retry, addressed: AddressedSettings }
+                   routing_rules, rate_limits, filters, retry, addressed: AddressedSettings,
+                   link_domains: Vec<String> }
     AddressedSettings { types: Vec<String>, daily_cap: u64, type_caps: HashMap<String, u64> }
     ChannelConfig { enabled, config, recipients: Vec<RecipientConfig>, rate_limit? }
     RecipientConfig { address: HashMap<String,String>, types: Vec<String>,

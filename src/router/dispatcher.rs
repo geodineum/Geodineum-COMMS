@@ -141,6 +141,14 @@ impl MessageDispatcher {
             .get_settings(site_id)
             .await?
             .ok_or_else(|| CommsError::SiteNotFound(site_id.clone()))?;
+        let own_links;
+        let message = match super::links::own_links_only(message, &settings.link_domains) {
+            Some(m) => {
+                own_links = m;
+                &own_links
+            }
+            None => message,
+        };
 
         if !settings.enabled {
             info!(site_id = %site_id, "Site notifications disabled, skipping");

@@ -37,6 +37,11 @@ pub struct SiteSettings {
     /// Messages addressed to one person (`to`): which types may, and how many a day
     #[serde(default)]
     pub addressed: AddressedSettings,
+
+    /// Domains besides the one the site id names (`innovagent_nl` is innovagent.nl) that a mail's
+    /// button, footer link and logo may point at, subdomains included
+    #[serde(default)]
+    pub link_domains: Vec<String>,
 }
 
 /// A producer may name the one person a message goes to, only for these types, at most
@@ -192,6 +197,7 @@ impl SiteSettings {
             filters: FilterSettings::default(),
             retry: RetrySettings::default(),
             addressed: AddressedSettings::default(),
+            link_domains: vec![],
         }
     }
 }
