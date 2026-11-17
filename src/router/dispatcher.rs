@@ -49,6 +49,7 @@ fn to_operators(message: &CommsMessage) -> CommsMessage {
     if let Some(d) = m.dispatch.as_mut() {
         d.reply_markup = None;
     }
+    m.metadata.remove("compact");
     let body = m.content.body.take().unwrap_or_default();
     m.content.body = Some(format!("Site {}\n\n{}", m.site_id, body));
     m
@@ -615,6 +616,26 @@ mod tests {
     fn the_operators_take_security_findings_and_no_other_new_type() {
         assert_eq!(OPERATOR_TYPES, &["change_request", "lead", "security"]);
         assert!(!OPERATOR_TYPES.contains(&"alert"));
+    }
+
+    #[test]
+    fn a_site_cannot_send_the_operators_a_compact_message() {
+        let m = CommsMessage {
+            id: "m-1".into(),
+            message_type: "lead".into(),
+            timestamp: "2026-11-17T12:00:00Z".into(),
+            site_id: "some_site".into(),
+            priority: 3,
+            sender: None,
+            content: crate::channels::MessageContent { subject: Some("S".into()), body: Some("B".into()), attachments: HashMap::new() },
+            metadata: HashMap::from([("compact".to_string(), serde_json::json!(true))]),
+            environment: "production".into(),
+            dispatch: None,
+            to: None,
+        };
+        let o = to_operators(&m);
+        assert!(!o.metadata.contains_key("compact"));
+        assert_eq!(o.content.body.as_deref(), Some("Site some_site\n\nB"));
     }
 
     #[test]

@@ -345,4 +345,34 @@ mod tg_template_tests {
         assert!(body.contains("*Service:*"), "label must be Service: {}", body);
         assert!(body.contains("cropped-Geodineum_Logo.png"), "brand link missing: {}", body);
     }
+
+    async fn alert(metadata: serde_json::Value, subject: &str, body: &str) -> String {
+        let r = TemplateRenderer::with_defaults().unwrap();
+        let mut ctx = tera::Context::new();
+        ctx.insert("content", &serde_json::json!({"subject": subject, "body": body}));
+        ctx.insert("message", &serde_json::json!({"priority": 2}));
+        ctx.insert("site_id", "geodineum");
+        ctx.insert("timestamp", "2026-11-17T07:45:00Z");
+        ctx.insert("metadata", &metadata);
+        ctx.insert("sender", &serde_json::json!(null));
+        r.render("telegram/alert.md", &ctx).await.unwrap().body
+    }
+
+    /// The operators' own watches set metadata.compact: their message is the subject and the body, nothing around it.
+    #[tokio::test]
+    async fn compact_alert_is_subject_and_body_only() {
+        let out = alert(serde_json::json!({"source": "estate-watch", "compact": true}),
+                        "Estate watch on aesir: 1 new finding", "1. dirtylingua.com: public vhost (x.conf)").await;
+        assert_eq!(out, "*Estate watch on aesir: 1 new finding*\n\n1\\. dirtylingua\\.com: public vhost \\(x\\.conf\\)\n");
+        let only = alert(serde_json::json!({"compact": true}), "Accepted: x vhost. It will not be mentioned again.", "").await;
+        assert_eq!(only, "*Accepted: x vhost\\. It will not be mentioned again\\.*\n");
+    }
+
+    #[tokio::test]
+    async fn without_the_flag_an_alert_keeps_its_header_and_footer() {
+        for meta in [serde_json::json!({}), serde_json::json!({"compact": false})] {
+            let out = alert(meta, "S", "B").await;
+            assert!(out.contains("GEODINEUM") && out.contains("*Service:*") && out.contains("2026\\-11\\-17"), "{}", out);
+        }
+    }
 }
