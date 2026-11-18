@@ -8,13 +8,14 @@ Notification daemon. gNode=Sun, ValKey=common backend. Stateless/state-aware: co
 
 ## ::ANCHOR
 
-- key types: `CommsMessage` · `MessageContent` · `SenderInfo` · `DispatchInfo`/`DispatchStatus{Pending|Processing|Sent|Failed|Spam}` · `SiteSettings` · `AddressedSettings{types,daily_cap,type_caps}` · `SiteSettings.link_domains` · `AddressedTo{email,name?}` · `ChannelConfig` · `RecipientConfig` · `SendResult` · `DispatchResult`
+- key types: `CommsMessage` · `MessageContent` · `SenderInfo` · `DispatchInfo`/`DispatchStatus{Pending|Processing|Sent|Failed|Spam}` · `SiteSettings` · `AddressedSettings{types,daily_cap,type_caps}` · `AddressedTo{email,name?}` · `ChannelConfig` · `RecipientConfig` · `SendResult` · `DispatchResult`
 - stream keys (braces LITERAL = Cluster hash-tag):
   - IN  `{site_id}:gnode:comms:{env}` — outbound dispatch queue (consume)
   - OUT `{site_id}:gnode:comms:inbound:{env}` — operator replies (produce)
   - KV `{site}:gnode:comms:link:<CODE>` (site's code → COMMS answer) · `{site}:gnode:comms:tg:<consumer>` (site's route, COMMS adds operator/chat) · `{bot}:gnode:comms:web:<operator>` (COMMS's record = authority)
   - OUT `{site_id}:gnode:comms:workflows:{env}` — workflow requests (produce)
-  - CFG `{site_id}:comms:config` — ValKey STRING (single JSON `SiteSettings`, NOT a hash)
+  - CFG `{site_id}:comms:config` — ValKey STRING (single JSON `SiteSettings`, NOT a hash); site-writable, so nothing operator-only in it
+  - FILE `/etc/geodineum/mail/link-domains` — operators' (root) list of a site's other mail-link domains
   - DISCOVER `gnode:site:{site_id}:meta` — fallback site registry scan
 - consumer group: `geodineum_comms_dispatch`
 - parse: `parse_message(stream_key,entry)->CommsMessage` `stream_reader.rs`
@@ -108,5 +109,5 @@ ISOLATED_FROM: gMath · gNode command/health streams (does not parse t/c/p/ss/sn
 - "CONTRACT says required, code says optional-with-fallback: environment + content drift"
 - "post-ACK retry = XRANGE stream-history re-fetch, failed channels ONLY, all filters re-apply; trim = abandon"
 - "YAML spam blocklists ADDITIVE over curated built-ins — config can only strengthen, never weaken"
-- "links in a mail: metadata cta_url|site_url|logo_url kept ONLY if https ∧ no userinfo ∧ no port ∧ host == site domain or *.site domain; site domain = site_id with `_`→`.` (from the stream KEY; hyphen look-alikes never match) ∪ settings.link_domains; else the field is removed before any channel + WARN(site, message id, host): mail goes out without that button/link/logo (router/links.rs)"
+- "links in a mail: metadata cta_url|site_url|logo_url kept ONLY if https ∧ no userinfo ∧ no port ∧ host == site domain or *.site domain; site domain = site_id with `_`→`.` (from the stream KEY; hyphen look-alikes never match) ∪ the operators' /etc/geodineum/mail/link-domains line `<site_id> <domain>...` (root 0640, read per mail, `sudo geodineum comms links`); a `link_domains` in {site}:comms:config is NOT read (the site writes that key); else the field is removed before any channel + WARN(site, message id, host): mail goes out without that button/link/logo (router/links.rs)"
 - "sender-domain policy: from_email domain must be in /etc/geodineum/mail/authorized-domains (setup-mail-stack.sh writes it) or match GEODINEUM_DEFAULT_FROM — else sender is REWRITTEN to the default (reply-to keeps the site identity) with a 60s-rate-limited WARN; no default → send as-is + WARN (sender_policy.rs)"

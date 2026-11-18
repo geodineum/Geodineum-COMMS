@@ -1,6 +1,8 @@
 //! A mail's button, footer link and logo come from the message's metadata, which more than the site can
 //! write to its stream. They are kept only when they point at the sending site itself.
 
+use std::path::Path;
+
 use reqwest::Url;
 use tracing::warn;
 
@@ -9,9 +11,30 @@ use crate::channels::CommsMessage;
 /// Metadata fields a template turns into a link or an image.
 pub const LINK_FIELDS: &[&str] = &["cta_url", "site_url", "logo_url"];
 
+/// The other domains a site's mail may link to, one line per site: `<site_id> <domain> [<domain>...]`.
+/// Root writes it (`geodineum comms links`); a site's own settings cannot add to it, because the site writes those.
+pub const LINK_DOMAINS_FILE: &str = "/etc/geodineum/mail/link-domains";
+
+/// The domains `body` lists for `site_id`; `#` starts a comment, a site may have several lines.
+pub fn listed_domains(body: &str, site_id: &str) -> Vec<String> {
+    body.lines()
+        .map(|l| l.split('#').next().unwrap_or(""))
+        .filter_map(|l| {
+            let mut words = l.split_whitespace();
+            (words.next() == Some(site_id)).then(|| words.map(norm).collect::<Vec<_>>())
+        })
+        .flatten()
+        .collect()
+}
+
+/// The domains the operators' file lists for `site_id`; none when the file is absent or unreadable.
+pub fn operator_link_domains(file: &Path, site_id: &str) -> Vec<String> {
+    std::fs::read_to_string(file).map(|b| listed_domains(&b, site_id)).unwrap_or_default()
+}
+
 /// The domain a site id names: `innovagent_nl` is innovagent.nl, `rodeloper_innovagent_nl` is
 /// rodeloper.innovagent.nl. Only `_` maps back to `.`, so a hyphenated look-alike
-/// (rodeloper-innovagent.nl) never matches; a site whose domain has a hyphen lists it in `link_domains`.
+/// (rodeloper-innovagent.nl) never matches; a site whose domain has a hyphen needs an operator to list it.
 pub fn site_domain(site_id: &str) -> Option<String> {
     let d = site_id.trim().to_ascii_lowercase().replace('_', ".");
     (d.contains('.') && !d.starts_with('.') && !d.ends_with('.') && !d.contains("..")).then_some(d)
@@ -100,6 +123,16 @@ mod tests {
         assert!(is_own_link("ewaas_innovagent_nl", &listed, "https://ewaas.nl/order"));
         assert!(is_own_link("ewaas_innovagent_nl", &listed, "https://ewaas.innovagent.nl/order"));
         assert!(!is_own_link("ewaas_innovagent_nl", &["nl".to_string()], "https://evil.nl/"), "a bare suffix is not a domain");
+    }
+
+    #[test]
+    fn the_operators_file_lists_domains_per_site() {
+        let body = "# site domains\nalpha_nl Shop-Alpha.example. other.example # a comment\nbeta_nl beta.example\nalpha_nl third.example\n\n#alpha_nl hidden.example\nalpha_nl_x x.example\n";
+        assert_eq!(listed_domains(body, "alpha_nl"), vec!["shop-alpha.example", "other.example", "third.example"]);
+        assert_eq!(listed_domains(body, "beta_nl"), vec!["beta.example"]);
+        assert!(listed_domains(body, "gamma_nl").is_empty());
+        assert!(listed_domains(body, "alpha").is_empty(), "a prefix of a site id is another site");
+        assert!(operator_link_domains(Path::new("/nonexistent/link-domains"), "alpha_nl").is_empty());
     }
 
     #[test]

@@ -67,6 +67,8 @@ pub struct MessageDispatcher {
     delivery_off: bool,
     /// The bot site whose Telegram channel carries a message addressed to the operators.
     operator_site: Option<String>,
+    /// The operators' list of the other domains a site's mail may link to.
+    link_domains_file: std::path::PathBuf,
 }
 
 /// Skip markers that mean "intentionally not sent": acknowledged and archived as
@@ -97,11 +99,17 @@ impl MessageDispatcher {
             allow_nonprod_send,
             delivery_off,
             operator_site: None,
+            link_domains_file: super::links::LINK_DOMAINS_FILE.into(),
         }
     }
 
     pub fn with_operator_site(mut self, site: impl Into<String>) -> Self {
         self.operator_site = Some(site.into());
+        self
+    }
+
+    pub fn with_link_domains_file(mut self, file: impl Into<std::path::PathBuf>) -> Self {
+        self.link_domains_file = file.into();
         self
     }
 
@@ -143,7 +151,8 @@ impl MessageDispatcher {
             .await?
             .ok_or_else(|| CommsError::SiteNotFound(site_id.clone()))?;
         let own_links;
-        let message = match super::links::own_links_only(message, &settings.link_domains) {
+        let link_domains = super::links::operator_link_domains(&self.link_domains_file, site_id);
+        let message = match super::links::own_links_only(message, &link_domains) {
             Some(m) => {
                 own_links = m;
                 &own_links

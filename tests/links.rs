@@ -40,31 +40,42 @@ impl NotificationChannel for Recorder {
     }
 }
 
-async fn setup(site: &str, link_domains: Vec<String>) -> Option<(MessageDispatcher, Arc<Recorder>)> {
+/// `site_listed`: what the site writes into its own settings as `link_domains`; `operator_listed`: the
+/// operators' file. Only the second may count.
+async fn setup(site: &str, site_listed: &[&str], operator_listed: &[&str]) -> Option<(MessageDispatcher, Arc<Recorder>)> {
     let port = std::env::var("COMMS_TEST_VALKEY_PORT").ok()?;
     let client = redis::Client::open(format!("redis://127.0.0.1:{}", port)).expect("test ValKey");
     let conn = client.get_multiplexed_async_connection().await.expect("test ValKey");
     let mut settings = SiteSettings::new(site);
     settings.addressed.types = vec!["shop".to_string()];
-    settings.link_domains = link_domains;
     settings.channels.email = Some(ChannelConfig {
         enabled: true,
         config: HashMap::new(),
         recipients: vec![],
         rate_limit: None,
     });
+    let mut written = serde_json::to_value(&settings).unwrap();
+    written["link_domains"] = serde_json::json!(site_listed);
     let mut c = conn.clone();
     let _: () = redis::cmd("SET")
         .arg(format!("{{{}}}:comms:config", site))
-        .arg(serde_json::to_string(&settings).unwrap())
+        .arg(written.to_string())
         .query_async(&mut c)
         .await
         .expect("test ValKey");
+    let file = std::env::temp_dir().join(format!("comms-link-domains-{}-{}", std::process::id(), site));
+    let mut body = format!("# operators\nother_site {}\n", site_listed.join(" "));
+    if !operator_listed.is_empty() {
+        body.push_str(&format!("{} {}\n", site, operator_listed.join(" ")));
+    }
+    std::fs::write(&file, body).expect("operators' file");
     let renderer = Arc::new(TemplateRenderer::new("templates").expect("template renderer"));
     let mut registry = ChannelRegistry::new(renderer);
     let recorder = Arc::new(Recorder::default());
     registry.register(recorder.clone());
-    Some((MessageDispatcher::new(Arc::new(registry), Arc::new(SettingsStore::new(conn)), false, false), recorder))
+    let d = MessageDispatcher::new(Arc::new(registry), Arc::new(SettingsStore::new(conn)), false, false)
+        .with_link_domains_file(file);
+    Some((d, recorder))
 }
 
 fn shop_mail(site: &str, cta: &str) -> CommsMessage {
@@ -89,7 +100,7 @@ fn shop_mail(site: &str, cta: &str) -> CommsMessage {
 
 #[tokio::test]
 async fn a_button_to_another_host_is_dropped_before_it_reaches_the_channel() {
-    let Some((d, rec)) = setup("links_a_nl", vec![]).await else { return };
+    let Some((d, rec)) = setup("links_a_nl", &[], &[]).await else { return };
     assert!(d.dispatch(&shop_mail("links_a_nl", "https://pay.evil.example/links_a_nl")).await.unwrap().is_success());
     let got = rec.metadata.lock().last().cloned().unwrap();
     assert!(!got.contains_key("cta_url"), "a foreign button must not reach the mail");
@@ -97,10 +108,27 @@ async fn a_button_to_another_host_is_dropped_before_it_reaches_the_channel() {
 }
 
 #[tokio::test]
-async fn the_sites_own_button_and_a_listed_domain_pass() {
-    let Some((d, rec)) = setup("links_b_nl", vec!["shop-b.example".to_string()]).await else { return };
+async fn the_sites_own_button_and_a_domain_the_operators_list_pass() {
+    let Some((d, rec)) = setup("links_b_nl", &[], &["shop-b.example"]).await else { return };
     for cta in ["https://links.b.nl/order?t=x", "https://www.shop-b.example/order?t=x"] {
         assert!(d.dispatch(&shop_mail("links_b_nl", cta)).await.unwrap().is_success());
         assert_eq!(rec.metadata.lock().last().unwrap().get("cta_url"), Some(&serde_json::json!(cta)));
     }
+}
+
+#[tokio::test]
+async fn a_domain_the_site_lists_in_its_own_settings_does_not_count() {
+    let Some((d, rec)) = setup("links_c_nl", &["pay.evil.example"], &[]).await else { return };
+    assert!(d.dispatch(&shop_mail("links_c_nl", "https://pay.evil.example/links_c_nl")).await.unwrap().is_success());
+    let got = rec.metadata.lock().last().cloned().unwrap();
+    assert!(!got.contains_key("cta_url"), "the site's own link_domains must not let a foreign button through");
+}
+
+#[tokio::test]
+async fn another_sites_listed_domain_does_not_count() {
+    let Some((d, rec)) = setup("links_d_nl", &["shop-d.example"], &["own-d.example"]).await else { return };
+    assert!(d.dispatch(&shop_mail("links_d_nl", "https://shop-d.example/x")).await.unwrap().is_success());
+    assert!(!rec.metadata.lock().last().unwrap().contains_key("cta_url"), "a domain listed for other_site is not this site's");
+    assert!(d.dispatch(&shop_mail("links_d_nl", "https://own-d.example/x")).await.unwrap().is_success());
+    assert_eq!(rec.metadata.lock().last().unwrap().get("cta_url"), Some(&serde_json::json!("https://own-d.example/x")));
 }

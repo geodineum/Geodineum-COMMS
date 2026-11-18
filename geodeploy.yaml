@@ -55,3 +55,8 @@ cli:
       description: Show or change the From address a site's email is sent as
       requires_sudo: true
       category: COMMS
+    - name: comms links
+      handler: scripts/cli/comms-links.sh
+      description: Show or change the other domains a site's mail may link to (operators only)
+      requires_sudo: true
+      category: COMMS

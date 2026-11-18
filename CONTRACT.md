@@ -66,7 +66,12 @@ are kept only when the URL is https, has no credentials and no port, and its
 host is the site's own domain or a subdomain of it. The site's own domain is
 the one its id names (`innovagent_nl` is innovagent.nl: `_` read as `.`, so a
 hyphenated look-alike never matches; the id comes from the stream key, never
-the body), plus any listed in its settings' `link_domains`. Anything else is
+the body), plus any the operators list for it in
+`/etc/geodineum/mail/link-domains` (root-owned, one line per site:
+`<site_id> <domain> [<domain>...]`, read for every mail; written by
+`sudo geodineum comms links <site> set|add|remove|clear`). A site's own
+settings cannot add a domain: the site writes them, so a `link_domains` found
+there is not read. Anything else is
 removed before the message reaches a channel, with a warning naming the site,
 the message and the host: the mail goes out without that button, link or logo.
 
@@ -176,6 +181,7 @@ What COMMS needs, and from which component.
 | Telegram Bot API token | **Plain string from `TELEGRAM_BOT_TOKEN` env var** (NOT from config file); forms `api_base = https://api.telegram.org/bot{token}` | `/etc/geodineum/credentials/` or env var |
 | Twilio credentials | Per-site `account_sid`, `auth_token` from `{site_id}:comms:config` → `channels.sms.config`; ISO phone numbers with country code. Same plain-value storage caveat as SMTP | gCore admin (per-site settings) |
 | Spam filter | Only messages a visitor sent are checked (a `sender.email`, or a `sender.ip` that is not loopback); alerts, login codes, receipts and test sends never are. Signals add to a score, spam at 0.7: blocked IP 1.0, blocked email domain 0.8, an address cut into five or more pieces with four of one letter 0.5, gibberish sender name 0.5, gibberish or random-token subject 0.4, three or more links 0.4, each blocked keyword as a whole word 0.3. No weak signal reaches 0.7 alone: dots in an address never make spam by themselves. A site whose `filters.spam_enabled` is true is judged by the built-in lists plus its own, and its `spam_action` decides: `flag` delivers with the subject marked `[spam?]`, `quarantine` archives `status=spam` without dispatch, `reject` (gCore's `drop`) neither dispatches nor archives. Every other site meets the daemon-wide filter (`spam_filter` in `config/default.yaml`, its lists additive over the built-ins, **on** by default since 2026-11-09), which quarantines. Held messages: `geodineum-comms messages <site> --status spam` | site settings, operator config |
+| Link domains | `/etc/geodineum/mail/link-domains` (root:geodineum-comms 0640), `<site_id> <domain>...` per line, `#` comments; read for every mail; absent = none | operators: `sudo geodineum comms links` (`scripts/cli/comms-links.sh`) |
 | gNode site registry | `gnode:site:{site_id}:meta` — scanned as a secondary site-discovery fallback when no `{*}:gnode:comms:{env}` stream exists for a site | gNode daemon |
 | Discovery events | `{constellation}:gnode:broadcast:global`, read with `XREVRANGE`/`XREAD` (no group, never blocking); entries `type=<event>` (gNode CONTRACT.md, broadcast stream). Needs the read grant `%R~*:gnode:broadcast:global` | `onboard-service.sh` (`site_registered`), the installer's deploy sweep (`component_deployed`) |
 
@@ -302,9 +308,12 @@ A ValKey **string** value holding a single JSON-encoded `SiteSettings` object
       addressed { types [str] (default ["planning"]), daily_cap (int, default 200),
                   type_caps {type: int} (default {}: a type named here has its own
                   daily allowance under {site}:comms:stats:addressed:<type>:YYYYMMDD,
-                  apart from daily_cap, which it neither uses nor is limited by) },
-      link_domains [str] (default []: domains besides the one the site id names that a
-                  mail's cta_url, site_url and logo_url may point at, subdomains included) }
+                  apart from daily_cap, which it neither uses nor is limited by) } }
+
+The site's own ValKey user writes this key (gCore's Comms page through
+gNode-Client), so nothing that only an operator may decide lives here: the
+other domains a mail may link to are in `/etc/geodineum/mail/link-domains`
+(§1.2), and an unknown field such as `link_domains` is ignored.
 
     ChannelConfig { enabled, config {},
       recipients [{ address {key:val}, types [str], min_priority (int, default 5) }],
@@ -338,8 +347,7 @@ A ValKey **string** value holding a single JSON-encoded `SiteSettings` object
                    attempts: u32, last_attempt?, next_retry? }
     DispatchStatus = Pending | Processing | Sent | Failed | Spam
     SiteSettings { site_id, enabled, channels: ChannelSettings,
-                   routing_rules, rate_limits, filters, retry, addressed: AddressedSettings,
-                   link_domains: Vec<String> }
+                   routing_rules, rate_limits, filters, retry, addressed: AddressedSettings }
     AddressedSettings { types: Vec<String>, daily_cap: u64, type_caps: HashMap<String, u64> }
     ChannelConfig { enabled, config, recipients: Vec<RecipientConfig>, rate_limit? }
     RecipientConfig { address: HashMap<String,String>, types: Vec<String>,

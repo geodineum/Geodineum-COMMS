@@ -37,11 +37,6 @@ pub struct SiteSettings {
     /// Messages addressed to one person (`to`): which types may, and how many a day
     #[serde(default)]
     pub addressed: AddressedSettings,
-
-    /// Domains besides the one the site id names (`innovagent_nl` is innovagent.nl) that a mail's
-    /// button, footer link and logo may point at, subdomains included
-    #[serde(default)]
-    pub link_domains: Vec<String>,
 }
 
 /// A producer may name the one person a message goes to, only for these types, at most
@@ -197,7 +192,6 @@ impl SiteSettings {
             filters: FilterSettings::default(),
             retry: RetrySettings::default(),
             addressed: AddressedSettings::default(),
-            link_domains: vec![],
         }
     }
 }
@@ -256,6 +250,14 @@ mod tests {
         // Grant bodies contain -, ., (, ) — escape_markdown_v2 handles them,
         // so the default parse mode is safe to inherit.
         assert_eq!(cfg.parse_mode, "MarkdownV2");
+    }
+
+    /// The site writes these settings, so the other domains its mail may link to are not among them: a
+    /// `link_domains` a site saves is read as nothing (the operators keep that list, router/links.rs).
+    #[test]
+    fn link_domains_in_site_settings_is_not_read() {
+        let s: SiteSettings = serde_json::from_str(r#"{"site_id":"x_nl","channels":{},"link_domains":["evil.example"]}"#).unwrap();
+        assert!(!serde_json::to_string(&s).unwrap().contains("evil.example"));
     }
 
     /// The custom-channel flatten means an unrecognised key under `channels`
