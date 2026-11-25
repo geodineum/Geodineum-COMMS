@@ -66,6 +66,7 @@ clap = { version = "4.4", features = ["derive", "env"] }
 
 # Schema publication (ships with Geodineum installer repo)
 geodineum-schema = { path = "../Geodineum/lib/geodineum-schema" }
+ammonia = "4"
 
 # Validation
 

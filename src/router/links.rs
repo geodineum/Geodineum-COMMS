@@ -1,6 +1,10 @@
 //! A mail's button, footer link and logo come from the message's metadata, which more than the site can
-//! write to its stream. They are kept only when they point at the sending site itself.
+//! write to its stream. They are kept only when they point at the sending site itself. A message body in HTML
+//! (`metadata.html`, the guest template) is cleaned to a short list of text tags and safe inline styles, its links
+//! held to the same rule, before any template sees it.
 
+use std::borrow::Cow;
+use std::collections::HashSet;
 use std::path::Path;
 
 use reqwest::Url;
@@ -57,9 +61,57 @@ pub fn is_own_link(site_id: &str, link_domains: &[String], url: &str) -> bool {
         .any(|d| host == d || host.ends_with(&format!(".{}", d)))
 }
 
+/// The metadata field a template may render as HTML: only ever after [`clean_html`].
+pub const HTML_FIELD: &str = "html";
+
+const HTML_TAGS: &[&str] = &["p", "br", "strong", "b", "em", "i", "u", "a", "ul", "ol", "li", "h2", "h3", "blockquote", "hr", "span", "div"];
+const STYLE_PROPERTIES: &[&str] = &[
+    "color", "background-color", "font-size", "font-weight", "font-style", "font-family", "line-height", "letter-spacing", "text-transform",
+    "text-decoration", "text-align", "margin", "margin-top", "margin-right", "margin-bottom", "margin-left", "padding", "padding-top",
+    "padding-right", "padding-bottom", "padding-left", "border", "border-top", "border-bottom", "border-left",
+];
+
+/// An HTML body cut down to text markup: the tags above, inline styles of the properties above only (so no
+/// url(), no positioning, no images), and links that are https to the site's own domains or mailto one of them.
+/// Scripts, styles, forms, images and every other tag or attribute are removed; their text stays.
+pub fn clean_html(site_id: &str, link_domains: &[String], html: &str) -> String {
+    let site = site_id.to_string();
+    let domains = link_domains.to_vec();
+    ammonia::Builder::default()
+        .tags(HTML_TAGS.iter().copied().collect::<HashSet<_>>())
+        .generic_attributes(["style"].into_iter().collect::<HashSet<_>>())
+        .tag_attributes(std::iter::once(("a", ["href"].into_iter().collect::<HashSet<_>>())).collect())
+        .filter_style_properties(STYLE_PROPERTIES.iter().copied().collect::<HashSet<_>>())
+        .url_schemes(["https", "mailto"].into_iter().collect::<HashSet<_>>())
+        .url_relative(ammonia::UrlRelative::Deny)
+        .link_rel(Some("noopener noreferrer"))
+        .attribute_filter(move |_, attr, value| {
+            if attr != "href" {
+                return Some(Cow::Owned(value.to_string()));
+            }
+            let own = match value.trim().strip_prefix("mailto:") {
+                Some(addr) => addr.rsplit_once('@').is_some_and(|(local, host)| {
+                    !local.is_empty() && !host.contains(['?', '/', ':']) && is_own_link(&site, &domains, &format!("https://{host}/"))
+                }),
+                None => is_own_link(&site, &domains, value),
+            };
+            own.then(|| Cow::Owned(value.to_string()))
+        })
+        .clean(html)
+        .to_string()
+}
+
 /// The message with every link field that does not point at its own site removed (the template then
-/// renders no button, no footer link, no logo), each removal logged.
+/// renders no button, no footer link, no logo), and an HTML body cleaned, each change logged.
 pub fn own_links_only(message: &CommsMessage, link_domains: &[String]) -> Option<CommsMessage> {
+    let html = match message.metadata.get(HTML_FIELD) {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(s)) => {
+            let clean = clean_html(&message.site_id, link_domains, s);
+            (clean != *s).then_some(clean)
+        }
+        Some(_) => Some(String::new()),
+    };
     let foreign: Vec<&str> = LINK_FIELDS
         .iter()
         .copied()
@@ -69,10 +121,14 @@ pub fn own_links_only(message: &CommsMessage, link_domains: &[String]) -> Option
             Some(_) => true,
         })
         .collect();
-    if foreign.is_empty() {
+    if foreign.is_empty() && html.is_none() {
         return None;
     }
     let mut m = message.clone();
+    if let Some(clean) = html {
+        warn!(site_id = %m.site_id, message_id = %m.id, "HTML body held markup, styles or links not allowed: cleaned before the template");
+        m.metadata.insert(HTML_FIELD.to_string(), serde_json::Value::String(clean));
+    }
     for f in foreign {
         let host = m.metadata.get(f).and_then(|v| v.as_str()).and_then(|s| Url::parse(s).ok())
             .and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
@@ -133,6 +189,52 @@ mod tests {
         assert!(listed_domains(body, "gamma_nl").is_empty());
         assert!(listed_domains(body, "alpha").is_empty(), "a prefix of a site id is another site");
         assert!(operator_link_domains(Path::new("/nonexistent/link-domains"), "alpha_nl").is_empty());
+    }
+
+    #[test]
+    fn an_html_body_keeps_text_markup_and_own_links_only() {
+        let dirty = concat!(
+            "<p style=\"margin:0 0 16px;color:#1d1c1a;background:url(https://evil.example/x.png);position:fixed\" onclick=\"x()\">Beste <strong>Sanne</strong>,</p>",
+            "<script>steal()</script><style>p{}</style><img src=\"https://evil.example/t.gif\">",
+            "<p><a href=\"https://twentyseven.innovagent.nl/menu\" style=\"color:#8a6d3b\">menu</a> ",
+            "<a href=\"https://evil.example/login\">login</a> <a href=\"javascript:alert(1)\">x</a> <a href=\"/relative\">r</a> ",
+            "<a href=\"mailto:gasten@twentyseven.innovagent.nl\">mail</a> <a href=\"mailto:x@evil.example\">evil</a></p>",
+            "<form action=\"https://evil.example\"><input name=\"pw\"></form><iframe src=\"https://evil.example\"></iframe>"
+        );
+        let clean = clean_html("twentyseven_innovagent_nl", &[], dirty);
+        assert!(clean.contains("Beste <strong>Sanne</strong>,"), "{clean}");
+        assert!(clean.contains("margin:0 0 16px") && clean.contains("color:#1d1c1a"), "safe styles kept: {clean}");
+        for gone in ["url(", "position", "onclick", "<script", "steal()", "<style", "<img", "evil.example", "javascript:", "/relative", "<form", "<input", "<iframe"] {
+            assert!(!clean.contains(gone), "{gone} must be gone: {clean}");
+        }
+        assert!(clean.contains("href=\"https://twentyseven.innovagent.nl/menu\""), "{clean}");
+        assert!(clean.contains("href=\"mailto:gasten@twentyseven.innovagent.nl\""), "{clean}");
+        assert!(clean.contains(">login</a>") || clean.contains("login"), "a refused link keeps its text");
+        assert!(clean.contains("rel=\"noopener noreferrer\""));
+    }
+
+    #[test]
+    fn a_message_with_an_unclean_html_body_is_cleaned_and_a_clean_one_left() {
+        let mut m = CommsMessage {
+            id: "m2".into(),
+            message_type: "guest".into(),
+            timestamp: String::new(),
+            site_id: "twentyseven_innovagent_nl".into(),
+            priority: 2,
+            sender: None,
+            content: crate::channels::MessageContent { subject: None, body: None, attachments: Default::default() },
+            metadata: Default::default(),
+            environment: "production".into(),
+            dispatch: None,
+            to: None,
+        };
+        m.metadata.insert("html".into(), serde_json::json!("<p>Dank</p><script>x()</script>"));
+        let out = own_links_only(&m, &[]).expect("changed");
+        assert_eq!(out.metadata.get("html"), Some(&serde_json::json!("<p>Dank</p>")));
+        m.metadata.insert("html".into(), serde_json::json!("<p>Dank</p>"));
+        assert!(own_links_only(&m, &[]).is_none(), "a clean body is left as it is");
+        m.metadata.insert("html".into(), serde_json::json!({"not": "text"}));
+        assert_eq!(own_links_only(&m, &[]).expect("changed").metadata.get("html"), Some(&serde_json::json!("")));
     }
 
     #[test]

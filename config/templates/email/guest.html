@@ -1,0 +1,38 @@
+<!-- subject: {{ content.subject | default(value="") }} -->
+<!DOCTYPE html>
+<html lang="{{ metadata.lang | default(value="nl") }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light">
+<title>{{ content.subject | default(value="") }}</title>
+</head>
+{%- set brand = metadata.brand | default(value="") -%}
+{%- set ink = metadata.brand_color | default(value="#050505") -%}
+{%- set paper = metadata.paper_color | default(value="#f5f3ef") -%}
+<body style="margin:0;padding:0;background:{{ paper }};">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{{ paper }};">
+<tr><td align="center" style="padding:32px 16px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border:1px solid #e7e1d6;">
+<tr><td align="center" style="background:{{ ink }};padding:28px 24px;">
+{%- if metadata.logo_url %}
+<img src="{{ metadata.logo_url }}" alt="{{ brand }}" width="120" style="display:block;width:120px;height:auto;border:0;">
+{%- else %}
+<span style="color:#ffffff;font-size:20px;letter-spacing:0.2em;text-transform:uppercase;">{{ brand }}</span>
+{%- endif %}
+</td></tr>
+<tr><td style="padding:36px 36px 20px;font-family:Montserrat,'Helvetica Neue',Arial,sans-serif;font-size:16px;line-height:1.65;color:#1d1c1a;">
+{%- if metadata.html %}
+{{ metadata.html | safe }}
+{%- else %}
+{{ content.body | default(value="") | escape | linebreaksbr | safe }}
+{%- endif %}
+</td></tr>
+{%- if metadata.footer %}
+<tr><td style="padding:0 36px 32px;font-family:Montserrat,'Helvetica Neue',Arial,sans-serif;font-size:12px;line-height:1.6;color:#9a958c;">{{ metadata.footer }}</td></tr>
+{%- endif %}
+</table>
+</td></tr>
+</table>
+</body>
+</html>
